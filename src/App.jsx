@@ -24,6 +24,7 @@ import PrivacyScreen from './screens/PrivacyScreen';
 import EmailVerificationScreen from './screens/EmailVerificationScreen';
 import MobileScannerScreen from './screens/MobileScannerScreen';
 import { useNotifications } from './hooks/useNotifications';
+import { isSpecialCategory } from './config/categories';
 import NotificationBell from './components/NotificationBell';
 import { ScannerProvider } from './context/ScannerContext.jsx';
 import { useInventoryScan } from './context/scannerHooks.js';
@@ -351,8 +352,7 @@ export default function App() {
       const currentQtyInCart = existingIndex >= 0 ? prevCart[existingIndex].quantity : 0;
       const newQuantity = currentQtyInCart + quantity;
 
-      const isSpecialCategory = ['Verdulería', 'Fiambrería', 'Carnicería'].includes(product.category);
-      const skipStockCheck = product.isByWeight || isSpecialCategory;
+      const skipStockCheck = product.isByWeight || isSpecialCategory(product.category);
 
       if (!skipStockCheck && newQuantity > (product.stock ?? 0)) {
         toast.error("Stock insuficiente para agregar más unidades");
@@ -380,8 +380,7 @@ export default function App() {
     }
 
     const product = products.find((p) => p.id === id);
-    const isSpecialCategory = product && ['Verdulería', 'Fiambrería', 'Carnicería'].includes(product.category);
-    const skipStockCheck = product && (product.isByWeight || isSpecialCategory);
+    const skipStockCheck = product && (product.isByWeight || isSpecialCategory(product.category));
 
     if (product && !skipStockCheck && nextQuantity > (product.stock ?? 0)) {
       toast.error("Stock insuficiente para agregar más unidades");
@@ -492,8 +491,7 @@ export default function App() {
         setProducts((previousProducts) => previousProducts.map((p) => {
           const item = saleItems.find((i) => i.productId === p.id);
           if (!item) return p;
-          const isSpecialCategory = ['Verdulería', 'Fiambrería', 'Carnicería'].includes(p.category);
-          if (p.isByWeight || isSpecialCategory) return p;
+          if (p.isByWeight || isSpecialCategory(p.category)) return p;
           return { ...p, stock: Math.max(toAmount(p.stock) - item.quantity, 0) };
         }));
         setSales((previous) => [...previous, newSale]);
@@ -520,7 +518,7 @@ export default function App() {
   };
 
   const saveProduct = async (data, editingId = null) => {
-    const isWeightOnlyCategory = ['Verdulería', 'Fiambrería', 'Carnicería'].includes(data.category);
+    const isWeightOnlyCategory = isSpecialCategory(data.category);
     const name = String(data.name || '').trim();
     const price = Number(data.price);
     const stock = isWeightOnlyCategory ? null : Number(data.stock);
@@ -573,7 +571,7 @@ export default function App() {
       price,
       stock,
       isByWeight: isKiosco ? false : data.isByWeight,
-      category: isKiosco && ['Fiambrería', 'Verdulería', 'Carnicería'].includes(data.category)
+      category: isKiosco && isSpecialCategory(data.category)
         ? 'General'
         : data.category,
     };
@@ -745,29 +743,14 @@ export default function App() {
     setActiveView('pos');
   };
 
-  // --- LÓGICA DE EVALUACIÓN PEREZOSA (Upgrades, Downgrades, Promo End) ---
+  // --- LÓGICA DE EVALUACIÓN PEREZOSA (Upgrades, Downgrades) ---
   useEffect(() => {
     const runLazyBillingEvaluations = async () => {
       if (appMode !== 'business' || tenantId === DEFAULT_TENANT_ID || !settings.subscriptionId) return;
 
       const now = new Date();
 
-      // 1. Verificar Fin de Promoción (3 meses)
-      if (settings.promoActive && settings.promoEndDate) {
-        const promoExpiry = new Date(settings.promoEndDate);
-        if (now > promoExpiry) {
-          try {
-            const { finalizePromotion } = await import('./services/payments');
-            await finalizePromotion(tenantId, settings.plan, settings.subscriptionId);
-            setSettings(prev => ({ ...prev, promoActive: false }));
-            toast.info("Tu periodo promocional ha finalizado. La suscripción se ha actualizado al precio regular.");
-          } catch (err) {
-            console.error("Error al finalizar promo:", err);
-          }
-        }
-      }
-
-      // 2. Verificar Downgrade Programado
+      // 1. Verificar Downgrade Programado
       if (settings.scheduledDowngrade === 'kiosco' && settings.downgradeDate) {
         const downgradeExpiry = new Date(settings.downgradeDate);
         if (now > downgradeExpiry) {

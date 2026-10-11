@@ -8,7 +8,16 @@ function getAdminApp() {
   const serviceAccount = process.env.FIREBASE_SERVICE_ACCOUNT;
   if (!serviceAccount) throw new Error('FIREBASE_SERVICE_ACCOUNT no configurada');
 
-  return initializeApp({ credential: cert(JSON.parse(serviceAccount)) });
+  try {
+    const parsedAccount = JSON.parse(serviceAccount);
+    // Normalizar la private_key por si los saltos de línea se escaparon mal en el string del env
+    if (parsedAccount.private_key) {
+      parsedAccount.private_key = parsedAccount.private_key.replace(/\\n/g, '\n');
+    }
+    return initializeApp({ credential: cert(parsedAccount) });
+  } catch (err) {
+    throw new Error('Error al parsear FIREBASE_SERVICE_ACCOUNT: ' + err.message, { cause: err });
+  }
 }
 
 export function getAdminAuth() {

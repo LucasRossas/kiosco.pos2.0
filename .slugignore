@@ -1,0 +1,11 @@
+/src
+/public
+/dist
+/.idea
+/.github
+/.vercel
+/.firebase
+/vite.config.js
+/eslint.config.js
+/index.html
+/README.md

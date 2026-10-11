@@ -1,13 +1,13 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { ShoppingCart, Barcode, Search, Trash2, Camera, Banknote, LogOut, QrCode, FileText, X, Copy, AlertTriangle, RefreshCcw } from 'lucide-react';
-import { QRCodeSVG } from 'qrcode.react';
+import { ShoppingCart, Barcode, Search, Trash2, Camera, Banknote, LogOut, QrCode, FileText, X, AlertTriangle } from 'lucide-react';
+import { isSpecialCategory } from '../config/categories';
 import { toast } from 'sonner';
 import BarcodeScanner from '../components/BarcodeScanner';
 import ProductModal from '../components/ProductModal';
-import { getFirebaseAuth, loadGlobalProduct } from '../services/firebase';
+import { getFirebaseAuth, loadGlobalProduct, listenQrOrder } from '../services/firebase';
 import { generateSalePDF, openPDFInNewTab } from '../services/pdfGenerator';
 import { API_BASE_URL } from '../services/api';
-import { ARCA_ENABLED } from '../config/features';
+import { ARCA_ENABLED, QR_MP_ENABLED } from '../config/features';
 
 function ProductImage({ product }) {
   const [imageUrl, setImageUrl] = useState(product.imageUrl || product.image || null);
@@ -47,7 +47,6 @@ export default function PosScreen({
   onAddToCart,
   onRemoveFromCart,
   onUpdateCartQuantity,
-  onSetCart,
   onCheckout,
   onSaveProduct,
   onRegisterWithdrawal,
@@ -75,7 +74,6 @@ export default function PosScreen({
   const [isElectronicInvoice, setIsElectronicInvoice] = useState(false);
   const [isCartMobileOpen, setIsCartMobileOpen] = useState(false);
   const [mpExternalRef, setMpExternalRef] = useState(null);
-  const [mpInitPoint, setMpInitPoint] = useState('');
   const [pendingSale, setPendingSale] = useState(null);
   const [mpError, setMpError] = useState(null);
   const inputRef = useRef(null);
@@ -86,14 +84,31 @@ export default function PosScreen({
 
   const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
 
-  const closeMpModal = (force = false) => {
+  const closeMpModal = async (force = false) => {
     if (!force && mpExternalRef && !saleProcessedRef.current.has(mpExternalRef)) {
-      const confirmCancel = window.confirm('Si el cliente ya pagó, vas a tener que registrar la venta manualmente si cancelás ahora. ¿Deseás cerrar el QR?');
+      const confirmCancel = window.confirm('¿Deseás cancelar esta orden de Mercado Pago? El QR dejará de ser válido.');
       if (!confirmCancel) return;
+
+      try {
+        const currentUser = getFirebaseAuth()?.currentUser;
+        if (currentUser) {
+          const token = await currentUser.getIdToken();
+          await fetch(`${API_BASE_URL}/api/qr-order`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+            body: JSON.stringify({
+              action: 'cancel',
+              externalReference: mpExternalRef,
+              posExternalId: settings.mercadoPagoConfig?.posExternalId
+            })
+          });
+        }
+      } catch (e) {
+        console.error("Error al cancelar orden QR:", e);
+      }
     }
     setMpModalOpen(false);
     setMpExternalRef(null);
-    setMpInitPoint('');
     setIsMpLoading(false);
     setMpError(null);
   };
@@ -107,11 +122,12 @@ export default function PosScreen({
         const parsed = JSON.parse(saved);
         const age = Date.now() - new Date(parsed.createdAt).getTime();
         if (age < 24 * 60 * 60 * 1000) {
+          // eslint-disable-next-line react-hooks/set-state-in-effect -- initial load of pending sale
           setPendingSale(parsed);
         } else {
           localStorage.removeItem(key);
         }
-      } catch (e) {
+      } catch {
         localStorage.removeItem(key);
       }
     }
@@ -141,48 +157,23 @@ export default function PosScreen({
     }
   }, [weightProduct]);
 
-  // Polling for Mercado Pago payment status
+  // Listen for Real-time QR payment updates from Firestore
   useEffect(() => {
-    let intervalId = null;
-    if (mpModalOpen && mpExternalRef && tenantId && settings?.mercadoPagoConfig?.habilitado) {
-      const checkStatus = async () => {
-        try {
-          const currentUser = getFirebaseAuth()?.currentUser;
-          if (!currentUser) throw new Error('Sesión de Firebase requerida');
-          const token = await currentUser.getIdToken();
-          const response = await fetch(`${API_BASE_URL}/api/check-status`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-            body: JSON.stringify({
-              externalReference: mpExternalRef
-            })
-          });
-
-          if (!response.ok) {
-            // Error genérico para el usuario, log interno para debug
-            console.error(`Check status error: ${response.status}`);
-            return;
-          }
-          const result = await response.json();
-
-          if (result.status === 'approved') {
-            clearInterval(intervalId);
-            // Ya no cerramos el modal aquí, el handler lo hará si tiene éxito.
-            toast.success('¡Pago Aprobado!');
-            handleCheckoutRef.current?.(false, false, mpExternalRef);
-          }
-        } catch (error) {
-          // No exponemos el mensaje del error directamente al usuario en polling silencioso
-          console.error("Polling error hidden from UI for privacy");
+    let unsubscribe = null;
+    if (mpModalOpen && mpExternalRef && tenantId) {
+      unsubscribe = listenQrOrder(tenantId, mpExternalRef, (order) => {
+        // En QR V2 de Mercado Pago, la orden cambia a 'closed' cuando se completa el pago.
+        // Nuestro webhook actualiza el documento en qr_orders/{externalReference} con status: 'closed'
+        if (order.status === 'closed' || order.status === 'paid') {
+          toast.success('¡Pago Aprobado por Mercado Pago!');
+          handleCheckoutRef.current?.(false, false, mpExternalRef);
+        } else if (order.status === 'rejected' || order.status === 'expired') {
+          setMpError('La orden fue rechazada o expiró. Intente nuevamente.');
         }
-      };
-
-      intervalId = setInterval(checkStatus, 4000);
+      });
     }
-    return () => {
-      if (intervalId) clearInterval(intervalId);
-    };
-  }, [mpModalOpen, mpExternalRef, tenantId, settings?.mercadoPagoConfig?.habilitado]);
+    return () => { if (unsubscribe) unsubscribe(); };
+  }, [mpModalOpen, mpExternalRef, tenantId]);
 
   const selectProduct = (product) => {
     if (product.isByWeight) {
@@ -319,7 +310,7 @@ export default function PosScreen({
   const threshold = settings.lowStockThreshold ?? 5;
 
   const stockStatus = (product) => {
-    if (product.isByWeight || ['Verdulería', 'Fiambrería', 'Carnicería'].includes(product.category)) {
+    if (product.isByWeight || isSpecialCategory(product.category)) {
       return 'ok';
     }
     const s = product.stock ?? 0;
@@ -446,31 +437,34 @@ export default function PosScreen({
 
     const config = settings.mercadoPagoConfig;
 
-    if (!config?.habilitado) {
-      toast.error('Configuración de Mercado Pago incompleta. Ve a Configuración.');
+    if (!config?.habilitado || !config?.posExternalId) {
+      toast.error('Configuración de Mercado Pago QR V2 incompleta. Ve a Configuración.');
       return;
     }
 
     setIsMpLoading(true);
     const externalReference = `pos-${tenantId}-${Date.now()}`;
     setMpExternalRef(externalReference);
-    setMpInitPoint(''); // Limpiar el anterior
+    setMpModalOpen(true);
 
     try {
-      const VERCEL_API_URL = `${API_BASE_URL}/api/mercadopago`;
       const currentUser = getFirebaseAuth()?.currentUser;
       if (!currentUser) throw new Error('Sesión de Firebase requerida');
       const token = await currentUser.getIdToken();
 
       const payload = {
+        action: 'create',
         externalReference,
+        posExternalId: config.posExternalId,
+        shiftId: currentShift?.id,
+        cashier: currentShift?.cashier,
         items: cart.map(item => ({
           productId: item.id,
           quantity: Number(item.quantity) || 1
         }))
       };
 
-      const response = await fetch(VERCEL_API_URL, {
+      const response = await fetch(`${API_BASE_URL}/api/qr-order`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -482,15 +476,9 @@ export default function PosScreen({
       const data = await response.json();
 
       if (!response.ok) {
-        throw new Error(data.error || 'Error al generar preferencia');
+        throw new Error(data.error || 'Error al generar orden QR');
       }
 
-      if (!data.init_point || typeof data.init_point !== 'string' || !data.init_point.startsWith('https://')) {
-        throw new Error('Punto de inicio inválido');
-      }
-
-      setMpInitPoint(data.init_point);
-      setMpModalOpen(true);
       setMpError(null);
 
       localStorage.setItem(`pendingQrSale:${tenantId}`, JSON.stringify({
@@ -500,49 +488,16 @@ export default function PosScreen({
         createdAt: new Date().toISOString()
       }));
 
-      toast.success('Preferencia generada. Mostrando QR...');
+      toast.success('Orden enviada al QR del mostrador.');
     } catch (error) {
       console.error("MP QR Error:", error);
-      // Mensaje genérico para evitar filtrar lógica interna del backend
-      toast.error('No se pudo generar el pago. Reintente en unos instantes.');
-      setMpExternalRef(null);
+      toast.error(error.message || 'No se pudo generar la orden. Reintente.');
+      closeMpModal(true);
     } finally {
       setIsMpLoading(false);
     }
   };
 
-  const checkPendingPayment = async () => {
-    if (!pendingSale || isCheckingOut) return;
-
-    setIsCheckingOut(true);
-    try {
-      const currentUser = getFirebaseAuth()?.currentUser;
-      if (!currentUser) throw new Error('Sesión de Firebase requerida');
-      const token = await currentUser.getIdToken();
-      const response = await fetch(`${API_BASE_URL}/api/check-status`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ externalReference: pendingSale.externalReference })
-      });
-
-      const result = await response.json();
-      if (response.ok && result.status === 'approved') {
-        const ok = await handleCheckout(false, false, pendingSale.externalReference, pendingSale.items);
-        if (ok) {
-          toast.success('Venta pendiente confirmada automáticamente.');
-          setPendingSale(null);
-        } else {
-          toast.error('El pago está aprobado pero no se pudo registrar la venta.');
-        }
-      } else {
-        toast.info('El pago aún no figura como aprobado en Mercado Pago.');
-      }
-    } catch (error) {
-      toast.error('Error al verificar el pago pendiente.');
-    } finally {
-      setIsCheckingOut(false);
-    }
-  };
 
   if (!currentShift) return null;
 
@@ -567,6 +522,18 @@ export default function PosScreen({
               </div>
               <div className="flex gap-2">
                 <button
+                  onClick={async () => {
+                    const ok = await handleCheckout(false, false, pendingSale.externalReference, pendingSale.items);
+                    if (ok) {
+                      toast.success('Venta pendiente confirmada');
+                      setPendingSale(null);
+                    }
+                  }}
+                  className="px-3 py-1.5 text-xs font-bold bg-amber-600 text-white hover:bg-amber-700 rounded shadow-sm transition-colors"
+                >
+                  VERIFICAR PAGO
+                </button>
+                <button
                   onClick={() => {
                     localStorage.removeItem(`pendingQrSale:${tenantId}`);
                     setPendingSale(null);
@@ -574,13 +541,6 @@ export default function PosScreen({
                   className="px-3 py-1.5 text-xs font-bold text-amber-700 hover:bg-amber-100 rounded transition-colors"
                 >
                   DESCARTAR
-                </button>
-                <button
-                  disabled={isCheckingOut}
-                  onClick={checkPendingPayment}
-                  className="px-4 py-1.5 text-xs font-bold bg-amber-600 text-white rounded shadow-sm hover:bg-amber-700 transition-colors flex items-center gap-2"
-                >
-                  {isCheckingOut ? 'VERIFICANDO...' : <><RefreshCcw size={14} /> VERIFICAR PAGO</>}
                 </button>
               </div>
             </div>
@@ -664,7 +624,7 @@ export default function PosScreen({
                     </div>
                   </div>
                   <div className="mt-auto pt-1">
-                    {product.isByWeight || ['Verdulería', 'Fiambrería', 'Carnicería'].includes(product.category) ? (
+                    {product.isByWeight || isSpecialCategory(product.category) ? (
                       <p className="stock-badge ok bg-sky-50 text-sky-700 px-2 py-0.5 rounded text-[10px]">
                         Disponible al peso
                       </p>
@@ -761,7 +721,7 @@ export default function PosScreen({
                   </button>
                 </div>
               </div>
-              {settings.mercadoPagoConfig?.habilitado && (
+              {QR_MP_ENABLED && settings.mercadoPagoConfig?.habilitado && (
                 <button
                   className="w-full bg-[#009ee3] hover:bg-[#008ac9] text-white mt-0.5 py-1.5 rounded-lg flex items-center justify-center gap-2 text-xs font-bold shadow-sm transition-all active:scale-[0.98] disabled:opacity-50"
                   onClick={handleMercadoPagoQR}
@@ -934,7 +894,7 @@ export default function PosScreen({
               </button>
             </div>
 
-            {settings.mercadoPagoConfig?.habilitado && (
+            {QR_MP_ENABLED && settings.mercadoPagoConfig?.habilitado && (
               <button
                 className="w-full bg-[#009ee3] text-white py-4 rounded-2xl font-black text-lg shadow-xl active:scale-95 transition-transform disabled:opacity-50 mb-4 flex items-center justify-center gap-3"
                 onClick={() => {
@@ -1021,20 +981,20 @@ export default function PosScreen({
       {printTicket && <section className="print-ticket"><header><strong>{printTicket.storeName || 'PuntoGestión'}</strong><span>Ticket de venta</span></header><div>Turno: {printTicket.shift} · {printTicket.cashier}</div><div>{printTicket.createdAt.toLocaleString('es-AR')}</div><hr />{printTicket.items.map((item) => <div className="print-ticket-line" key={item.id}><span>{item.name}<small>{item.quantity} x ${Number(item.price).toLocaleString('es-AR')}</small></span><strong>$ {Number(item.lineTotal).toLocaleString('es-AR')}</strong></div>)}<hr /><div className="print-ticket-total"><span>Total</span><strong>$ {Number(printTicket.total).toLocaleString('es-AR', { minimumFractionDigits: 2 })}</strong></div><div>Medio de pago: {printTicket.paymentMethod}</div><footer>{settings.ticketFooter}</footer></section>}
       {isWithdrawalOpen && <div className="modal-overlay"><form className="modal-content withdrawal-form" onSubmit={handleWithdrawal}><div className="modal-heading"><h3>Retiro de efectivo</h3><button type="button" className="btn-icon" onClick={() => setIsWithdrawalOpen(false)}><LogOut size={18} /></button></div><label>Monto<input required type="number" min="0.01" step="0.01" value={withdrawal.amount} onChange={(e) => setWithdrawal({ ...withdrawal, amount: e.target.value })} /></label><label>Motivo / observación<input value={withdrawal.note} onChange={(e) => setWithdrawal({ ...withdrawal, note: e.target.value })} placeholder="Ej. Pago a proveedor" /></label><button className="btn-primary" type="submit">Guardar retiro</button></form></div>}
 
-      {mpModalOpen && (
+      {QR_MP_ENABLED && mpModalOpen && (
         <div className="modal-overlay !z-[100]">
           <div className="modal-content text-center max-w-sm">
             <div className="modal-heading">
-              <h3 className="text-xl font-bold">Pago con Mercado Pago</h3>
-              <button type="button" className="btn-icon" onClick={closeMpModal}>×</button>
+              <h3 className="text-xl font-bold">Cobro con QR en Mostrador</h3>
+              <button type="button" className="btn-icon" onClick={() => closeMpModal()}>×</button>
             </div>
             <div className="py-6 flex flex-col items-center">
               <div className="bg-white p-4 rounded-xl shadow-inner mb-4 border-2 border-dashed border-gray-200">
-                {mpInitPoint ? (
+                {settings.mercadoPagoConfig?.qrImageUrl ? (
                   <>
-                    <QRCodeSVG value={mpInitPoint} size={200} />
-                    <p className="text-[10px] text-gray-400 mt-2 font-medium">
-                      Escanea este código exclusivamente con la app de <span className="font-bold text-[#009ee3]">Mercado Pago</span> o la cámara de tu celular.
+                    <img src={settings.mercadoPagoConfig.qrImageUrl} alt="QR Mercado Pago" className="w-[200px] h-[200px] object-contain mx-auto" />
+                    <p className="text-[10px] text-gray-400 mt-2 font-bold uppercase tracking-widest">
+                      ESCANEÁ EL QR DEL MOSTRADOR
                     </p>
                   </>
                 ) : (
@@ -1049,7 +1009,7 @@ export default function PosScreen({
               <div className="flex items-center gap-2 mb-6 px-4 py-2 bg-blue-50 text-blue-700 rounded-lg animate-pulse">
                 <div className="w-2 h-2 bg-blue-600 rounded-full animate-bounce" />
                 <span className="text-xs font-bold uppercase tracking-wider">
-                  {isCheckingOut ? 'Confirmando pago...' : 'Esperando pago...'}
+                  {isCheckingOut ? 'Confirmando pago...' : 'Esperando escaneo del cliente...'}
                 </span>
               </div>
 
@@ -1059,47 +1019,28 @@ export default function PosScreen({
                     <AlertTriangle size={14} />
                     <span>{mpError}</span>
                   </div>
-                  <button
-                    onClick={() => handleCheckout(false, false, mpExternalRef)}
-                    className="mt-1 py-2 bg-red-600 text-white rounded-md hover:bg-red-700 flex items-center justify-center gap-2"
-                  >
-                    <RefreshCcw size={14} /> REINTENTAR CONFIRMACIÓN
-                  </button>
                 </div>
               )}
 
               <div className="w-full flex flex-col gap-2">
                 <button
                   disabled={isCheckingOut}
-                  className="w-full flex items-center justify-center gap-2 py-3 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-xl font-bold transition-all active:scale-95 disabled:opacity-50"
-                  onClick={() => {
-                    if (mpInitPoint) {
-                      navigator.clipboard.writeText(mpInitPoint);
-                      toast.success('¡Link copiado al portapapeles!');
-                    }
-                  }}
-                >
-                  <Copy size={18} /> Copiar Link de Pago
-                </button>
-
-                <button
-                  disabled={isCheckingOut}
-                  className="w-full py-4 bg-[#009ee3] hover:bg-[#008ac9] text-white rounded-xl font-black text-lg shadow-lg transition-all active:scale-95 mt-2 disabled:opacity-50"
+                  className="w-full py-4 bg-[#009ee3] hover:bg-[#008ac9] text-white rounded-xl font-black text-lg shadow-lg transition-all active:scale-95 mt-1 disabled:opacity-50"
                   onClick={async () => {
                     const ok = await handleCheckout(false, false, mpExternalRef);
-                    if (ok) toast.success('Venta confirmada (Pago Mercado Pago)');
+                    if (ok) toast.success('Venta confirmada');
                   }}
                 >
-                  {isCheckingOut ? 'PROCESANDO...' : 'CONFIRMAR PAGO RECIBIDO'}
+                  {isCheckingOut ? 'PROCESANDO...' : 'VERIFICAR PAGO'}
                 </button>
               </div>
             </div>
             <button
               disabled={isCheckingOut}
-              className="text-gray-400 text-xs mt-2 hover:underline disabled:no-underline"
+              className="text-red-500 font-bold text-xs mt-2 hover:underline disabled:no-underline"
               onClick={() => closeMpModal()}
             >
-              Cancelar y volver
+              CANCELAR ORDEN QR
             </button>
           </div>
         </div>

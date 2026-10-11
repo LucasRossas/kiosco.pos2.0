@@ -7,19 +7,15 @@ import { API_BASE_URL } from '../services/api';
 const plans = {
   kiosco: {
     name: 'Kiosco',
-    price: 25000,
-    fullPriceDisplay: '$50.000',
-    priceDisplay: '$25.000',
-    description: 'Lo esencial para operar una caja ágil.',
-    promoLabel: '50% OFF x 3 Meses'
+    price: 9000,
+    priceDisplay: '$9.000',
+    description: 'Lo esencial para operar una caja ágil.'
   },
   mercado: {
     name: 'Mercado',
-    price: 42500,
-    fullPriceDisplay: '$85.000',
-    priceDisplay: '$42.500',
-    description: 'La operación completa para comercios que crecen.',
-    promoLabel: '50% OFF x 3 Meses'
+    price: 15000,
+    priceDisplay: '$15.000',
+    description: 'La operación completa para comercios que crecen.'
   }
 };
 
@@ -63,8 +59,10 @@ export default function CheckoutScreen({ onBack, onCancelAccount }) {
 
     const selectedPlanKey = tenantData?.plan || tenantData?.planElegido || 'mercado';
     try {
-      // Llamada a la API de Vercel para procesar la suscripción de forma segura
-      const token = await user.getIdToken();
+      // Forzar recarga del usuario para detectar email verificado
+      await user.reload();
+      const token = await user.getIdToken(true);
+
       const response = await fetch(`${API_BASE_URL}/api/create-subscription`, {
         method: 'POST',
         headers: {
@@ -79,7 +77,10 @@ export default function CheckoutScreen({ onBack, onCancelAccount }) {
       const data = await response.json();
 
       if (!response.ok) {
-        throw new Error(data.error || 'Error al conectar con el servidor de pagos');
+        if (response.status === 403 && data.error === 'Email no verificado') {
+          throw new Error('Por favor verifica tu correo electrónico antes de suscribirte (revisa tu bandeja de entrada o spam).');
+        }
+        throw new Error(data.error || data.message || 'Error al conectar con el servidor de pagos');
       }
 
       if (data.adminBypass) {
@@ -140,11 +141,9 @@ export default function CheckoutScreen({ onBack, onCancelAccount }) {
             <section className="detail-group">
               <div className="group-label"><CreditCard size={14} /> PLAN ELEGIDO</div>
               <div className="plan-summary-box relative overflow-hidden">
-                <div className="absolute top-2 right-2 bg-amber-100 text-amber-700 text-[10px] font-bold px-2 py-0.5 rounded-full ring-1 ring-amber-600/20">{planInfo.promoLabel}</div>
                 <div className="plan-main-info">
                   <h3>Plan {planInfo.name}</h3>
                   <div className="flex flex-col items-end">
-                    <span className="text-xs text-slate-400 line-through leading-none mb-1">{planInfo.fullPriceDisplay}</span>
                     <div className="plan-price-large">{planInfo.priceDisplay}<small>/mes</small></div>
                   </div>
                 </div>
@@ -158,7 +157,7 @@ export default function CheckoutScreen({ onBack, onCancelAccount }) {
                 <strong>{planInfo.priceDisplay}</strong>
               </div>
               <button className="btn-pay-mercadopago w-full py-4 text-lg font-bold shadow-lg" onClick={handlePayment} disabled={processing}>
-                {processing ? 'Redirigiendo...' : 'Suscribirme con Descuento'}
+                {processing ? 'Redirigiendo...' : 'Suscribirme'}
               </button>
 
               <button
@@ -170,7 +169,7 @@ export default function CheckoutScreen({ onBack, onCancelAccount }) {
               </button>
 
               <p className="mt-2 text-center text-[10px] text-slate-500">
-                Aviso: La suscripción se mantendrá al precio promocional. La actualización a precio regular es manual.
+                La suscripción se renueva automáticamente cada mes. Podés cancelarla cuando quieras.
               </p>
             </section>
           </div>

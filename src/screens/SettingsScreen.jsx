@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { getFirebaseAuth, updateTenantIntegrations, deleteTenantAccount } from '../services/firebase';
-import { CheckCircle, Loader2, Trash2, ShieldAlert, FileText, Smartphone, Zap, Mail, ExternalLink, LogOut } from 'lucide-react';
+import { CheckCircle, Loader2, Trash2, ShieldAlert, FileText, Smartphone, Zap, Mail, ExternalLink, LogOut, QrCode, MapPin, Printer } from 'lucide-react';
 import { changeSubscriptionPlan, cancelSubscription } from '../services/payments';
 import { toast } from 'sonner';
 import { API_BASE_URL } from '../services/api';
@@ -14,6 +14,43 @@ export default function SettingsScreen({ settings, onSaveSettings, tenantId, onA
   const [deleteInput, setDeleteInput] = useState('');
   const [isDeleting, setIsDeleting] = useState(false);
   const [isChangingPlan, setIsChangingPlan] = useState(false);
+
+  // QR Setup State
+  const [qrForm, setQrForm] = useState({
+    address: '',
+    city: '',
+    state: 'Capital Federal',
+    latitude: '',
+    longitude: ''
+  });
+  const [isSettingUpQR, setIsSettingUpQR] = useState(false);
+  const [isGettingLocation, setIsGettingLocation] = useState(false);
+
+  const handleGetLocation = () => {
+    if (!navigator.geolocation) {
+      toast.error('Tu navegador no soporta geolocalización.');
+      return;
+    }
+
+    setIsGettingLocation(true);
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        setQrForm(prev => ({
+          ...prev,
+          latitude: position.coords.latitude,
+          longitude: position.coords.longitude
+        }));
+        setIsGettingLocation(false);
+        toast.success('Ubicación obtenida con éxito.');
+      },
+      (error) => {
+        console.error('Error getting location:', error);
+        setIsGettingLocation(false);
+        toast.error('No pudimos obtener tu ubicación. Por favor, ingresala manualmente o asegúrate de dar permisos.');
+      },
+      { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 }
+    );
+  };
 
   const [arcaTestStatus, setArcaTestStatus] = useState('idle');
 
@@ -38,6 +75,7 @@ export default function SettingsScreen({ settings, onSaveSettings, tenantId, onA
   useEffect(() => {
     if (settings?.mercadoPagoConfig) {
       // Sincroniza la configuración recibida desde Firestore con el formulario.
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- sync initial mp config
       setMpConfig({ habilitado: !!settings.mercadoPagoConfig.habilitado });
     }
   }, [settings?.mercadoPagoConfig]);
@@ -141,6 +179,56 @@ export default function SettingsScreen({ settings, onSaveSettings, tenantId, onA
     }
   };
 
+  const handleSetupQR = async (e) => {
+    e.preventDefault();
+    if (isSettingUpQR) return;
+
+    const toastId = toast.loading('Configurando sucursal y caja en Mercado Pago...');
+    setIsSettingUpQR(true);
+
+    try {
+      const auth = getFirebaseAuth();
+      const user = auth?.currentUser;
+      if (!user) throw new Error('Sesión no encontrada');
+
+      const token = await user.getIdToken();
+      const response = await fetch(`${API_BASE_URL}/api/qr-setup`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(qrForm)
+      });
+
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Error al configurar QR');
+
+      toast.success('¡QR configurado con éxito!', { id: toastId });
+
+      // Actualizar settings localmente para mostrar el QR
+      onSaveSettings({
+        ...settings,
+        mercadoPagoConfig: {
+          ...settings.mercadoPagoConfig,
+          qrImageUrl: data.qrImage,
+          posName: 'Caja Principal',
+          posExternalId: data.externalPosId
+        }
+      });
+
+    } catch (error) {
+      console.error('QR SETUP ERROR:', error);
+      toast.error(error.message, { id: toastId });
+    } finally {
+      setIsSettingUpQR(false);
+    }
+  };
+
+  const handlePrintQR = () => {
+    window.print();
+  };
+
   const [arcaConfig, setArcaConfig] = useState(settings.arcaConfig || {
     cuit: '',
     condicionIva: 'Monotributo',
@@ -177,11 +265,11 @@ export default function SettingsScreen({ settings, onSaveSettings, tenantId, onA
     let ownerPasswordRecord = settings.ownerPasswordRecord;
 
     if (adminPasswordEnabled) {
-      if (form.ownerPassword && form.ownerPassword.length >= 4) {
+      if (form.ownerPassword && form.ownerPassword.length >= 6) {
         const { hashPassword } = await import('../utils/passwordHash');
         ownerPasswordRecord = await hashPassword(form.ownerPassword);
       } else if (!ownerPasswordRecord) {
-        toast.error('La clave debe tener al menos 4 caracteres');
+        toast.error('La clave debe tener al menos 6 caracteres');
         return;
       }
     }
@@ -210,6 +298,7 @@ export default function SettingsScreen({ settings, onSaveSettings, tenantId, onA
     try {
       const integrationsUpdate = {
         mercadoPagoConfig: {
+          ...settings.mercadoPagoConfig,
           habilitado: !!mpConfig.habilitado,
           userId: settings.mercadoPagoConfig?.userId || null,
           vinculadoAt: settings.mercadoPagoConfig?.vinculadoAt || null
@@ -287,8 +376,7 @@ export default function SettingsScreen({ settings, onSaveSettings, tenantId, onA
         tenantId,
         settings.plan,
         targetPlan,
-        settings.subscriptionId,
-        settings.promoActive
+        settings.subscriptionId
       );
 
       if (result.isUpgrade) {
@@ -327,11 +415,6 @@ export default function SettingsScreen({ settings, onSaveSettings, tenantId, onA
                 {settings.scheduledDowngrade && (
                   <span className="text-xs text-amber-600 font-bold block mt-1">
                     ⚠️ Downgrade a Kiosco programado para el {new Date(settings.downgradeDate).toLocaleDateString()}
-                  </span>
-                )}
-                {settings.promoActive && (
-                  <span className="text-[10px] bg-amber-100 text-amber-700 font-black px-2 py-0.5 rounded-full mt-2 inline-block">
-                    PROMO 50% OFF ACTIVA
                   </span>
                 )}
               </div>
@@ -439,11 +522,11 @@ export default function SettingsScreen({ settings, onSaveSettings, tenantId, onA
                 Clave de administrador
                 <input
                   type="password"
-                  minLength="4"
+                  minLength="6"
                   required
                   value={form.ownerPassword || ''}
                   onChange={(e) => setForm({ ...form, ownerPassword: e.target.value })}
-                  placeholder="Mínimo 4 caracteres"
+                  placeholder="Mínimo 6 caracteres"
                 />
               </label>}
             </div>
@@ -508,6 +591,185 @@ export default function SettingsScreen({ settings, onSaveSettings, tenantId, onA
               <p className="text-xs text-slate-500">La credencial privada se administra exclusivamente en Vercel.</p>
             </div>
           </section>
+
+          {settings.mercadoPagoConfig?.habilitado && (
+            <section className="settings-card qr-config-card">
+              <h3 className="flex items-center gap-2">
+                <QrCode size={18} className="text-emerald-600" /> Cobro con QR Interoperable
+              </h3>
+
+              {!settings.mercadoPagoConfig?.qrImageUrl ? (
+                <form onSubmit={handleSetupQR} className="settings-form mt-4">
+                  <p className="text-sm text-slate-600 mb-4">
+                    Para generar tu QR oficial, Mercado Pago requiere registrar la ubicación física de tu comercio.
+                  </p>
+
+                  <div className="space-y-4">
+                    <label className="block text-xs font-bold text-slate-500 uppercase">
+                      Dirección del Local
+                      <div className="relative mt-1">
+                        <MapPin className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+                        <input
+                          type="text"
+                          className="pl-10 w-full"
+                          placeholder="Ej: Av. Rivadavia 1234"
+                          value={qrForm.address}
+                          onChange={e => setQrForm({...qrForm, address: e.target.value})}
+                          required
+                        />
+                      </div>
+                    </label>
+
+                    <div className="grid grid-cols-2 gap-4">
+                      <label className="block text-xs font-bold text-slate-500 uppercase">
+                        Ciudad
+                        <input
+                          type="text"
+                          className="mt-1 w-full"
+                          placeholder="Ej: CABA"
+                          value={qrForm.city}
+                          onChange={e => setQrForm({...qrForm, city: e.target.value})}
+                          required
+                        />
+                      </label>
+                      <label className="block text-xs font-bold text-slate-500 uppercase">
+                        Provincia
+                        <select
+                          className="mt-1 w-full"
+                          value={qrForm.state}
+                          onChange={e => setQrForm({...qrForm, state: e.target.value})}
+                          required
+                        >
+                          <option value="Capital Federal">Capital Federal</option>
+                          <option value="Buenos Aires">Buenos Aires</option>
+                          <option value="Catamarca">Catamarca</option>
+                          <option value="Chaco">Chaco</option>
+                          <option value="Chubut">Chubut</option>
+                          <option value="Cordoba">Córdoba</option>
+                          <option value="Corrientes">Corrientes</option>
+                          <option value="Entre Rios">Entre Ríos</option>
+                          <option value="Formosa">Formosa</option>
+                          <option value="Jujuy">Jujuy</option>
+                          <option value="La Pampa">La Pampa</option>
+                          <option value="La Rioja">La Rioja</option>
+                          <option value="Mendoza">Mendoza</option>
+                          <option value="Misiones">Misiones</option>
+                          <option value="Neuquen">Neuquén</option>
+                          <option value="Rio Negro">Río Negro</option>
+                          <option value="Salta">Salta</option>
+                          <option value="San Juan">San Juan</option>
+                          <option value="San Luis">San Luis</option>
+                          <option value="Santa Cruz">Santa Cruz</option>
+                          <option value="Santa Fe">Santa Fe</option>
+                          <option value="Santiago del Estero">Santiago del Estero</option>
+                          <option value="Tierra del Fuego">Tierra del Fuego</option>
+                          <option value="Tucuman">Tucumán</option>
+                        </select>
+                      </label>
+                    </div>
+
+                    <div className="location-coords-box">
+                      <div className="location-coords-header">
+                        <span>Coordenadas (Opcional pero recomendado)</span>
+                        <button
+                          type="button"
+                          onClick={handleGetLocation}
+                          disabled={isGettingLocation}
+                          className="text-[10px] bg-blue-50 text-blue-600 px-2 py-1 rounded-md font-bold hover:bg-blue-100 transition-colors flex items-center gap-1"
+                        >
+                          {isGettingLocation ? <Loader2 size={10} className="animate-spin" /> : <MapPin size={10} />}
+                          Obtener actual
+                        </button>
+                      </div>
+                      <div className="location-coords-grid">
+                        <input
+                          type="number"
+                          step="any"
+                          placeholder="Latitud"
+                          value={qrForm.latitude}
+                          onChange={e => setQrForm({...qrForm, latitude: e.target.value})}
+                        />
+                        <input
+                          type="number"
+                          step="any"
+                          placeholder="Longitud"
+                          value={qrForm.longitude}
+                          onChange={e => setQrForm({...qrForm, longitude: e.target.value})}
+                        />
+                      </div>
+                      <p className="location-coords-hint">
+                        * Mercado Pago V2 requiere coordenadas para mayor precisión en la creación de sucursales.
+                      </p>
+                    </div>
+
+                    <button
+                      type="submit"
+                      disabled={isSettingUpQR}
+                      className="w-full bg-emerald-600 hover:bg-emerald-700 text-white py-3 rounded-xl font-bold flex items-center justify-center gap-2 transition-all shadow-lg shadow-emerald-100"
+                    >
+                      {isSettingUpQR ? (
+                        <><Loader2 size={18} className="animate-spin" /> Configurando...</>
+                      ) : (
+                        <>Generar QR de Cobro</>
+                      )}
+                    </button>
+                  </div>
+                </form>
+              ) : (
+                <div className="mt-4">
+                  <div className="qr-preview-container bg-white p-6 rounded-[2rem] border-2 border-dashed border-emerald-200 flex flex-col items-center">
+                    <img
+                      src={settings.mercadoPagoConfig.qrImageUrl}
+                      alt="QR Mercado Pago"
+                      className="w-48 h-48 object-contain mb-4"
+                    />
+                    <div className="text-center">
+                      <p className="text-sm font-black text-slate-800 uppercase tracking-tighter">Caja Habilitada</p>
+                      <p className="text-[10px] text-emerald-600 font-bold">{settings.storeName || 'Mi Comercio'}</p>
+                    </div>
+                  </div>
+
+                  <div className="flex gap-2 mt-4">
+                    <button
+                      onClick={handlePrintQR}
+                      className="flex-1 bg-slate-900 text-white py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-2 hover:bg-slate-800 transition-all active:scale-95"
+                    >
+                      <Printer size={14} /> Imprimir Poster QR
+                    </button>
+                    <button
+                      onClick={() => {
+                        onSaveSettings({
+                          ...settings,
+                          mercadoPagoConfig: { ...settings.mercadoPagoConfig, qrImageUrl: null }
+                        });
+                      }}
+                      className="px-4 bg-white text-slate-400 border border-slate-200 rounded-xl text-xs font-bold hover:text-red-500 hover:border-red-200 transition-all"
+                      title="Reconfigurar"
+                    >
+                      Re-configurar
+                    </button>
+                  </div>
+
+                  <div className="print-only-poster hidden">
+                    {/* Este div solo se verá al imprimir */}
+                    <div className="print-poster-content">
+                       <div className="poster-header">
+                          <h1>Pagá con QR</h1>
+                          <p>Desde cualquier billetera virtual</p>
+                       </div>
+                       <div className="poster-qr-wrapper">
+                          <img src={settings.mercadoPagoConfig.qrImageUrl} alt="QR" />
+                       </div>
+                       <div className="poster-footer">
+                          <h2>{settings.storeName}</h2>
+                          <img src="/mp-logo.png" alt="Mercado Pago" className="mp-logo-small" />
+                       </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </section>
+          )}
 
           {ARCA_ENABLED && (
             <section className="settings-card">

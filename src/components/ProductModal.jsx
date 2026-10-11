@@ -3,6 +3,7 @@ import { X } from 'lucide-react';
 import { toast } from 'sonner';
 import { lookupProductCascade } from '../services/openFoodFacts';
 import { loadGlobalProduct } from '../services/firebase';
+import { isSpecialCategory, CATEGORIES_CONFIG } from '../config/categories';
 
 const VERDULERIA_DICTIONARY = [
   { name: "papa", icon: "🥔" },
@@ -95,7 +96,7 @@ export default function ProductModal({ product = null, products = [], initialBar
     product?.imageUrl && product.imageUrl.length <= 4 ? product.imageUrl : null
   );
 
-  const isWeightOnlyCategory = ['Verdulería', 'Fiambrería', 'Carnicería'].includes(form.category);
+  const isWeightOnlyCategory = isSpecialCategory(form.category);
 
   useEffect(() => {
     if (isWeightOnlyCategory) {
@@ -110,7 +111,7 @@ export default function ProductModal({ product = null, products = [], initialBar
     setOff({ status: 'loading', info: null });
 
     try {
-      const result = await lookupProductCascade(code.trim(), loadGlobalProduct);
+      const result = await lookupProductCascade(code.trim(), (barcode) => loadGlobalProduct(barcode));
       if (result.found) {
         setOff({ status: 'found', info: result });
 
@@ -457,9 +458,9 @@ export default function ProductModal({ product = null, products = [], initialBar
                 style={{ backgroundImage: 'url("data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' fill=\'none\' viewBox=\'0 0 24 24\' stroke=\'%236b7280\' stroke-width=\'2\'%3E%3Cpath stroke-linecap=\'round\' stroke-linejoin=\'round\' d=\'M19 9l-7 7-7-7\' /%3E%3C/svg%3E")', backgroundRepeat: 'no-repeat', backgroundPosition: 'right 6px center', backgroundSize: '10px' }}
               >
                 <option value="" disabled>Selecciona un rubro...</option>
-                {['Quiosco', 'General', 'Almacén', ...(!isKiosco ? ['Fiambrería', 'Verdulería', 'Carnicería'] : [])].map((cat) => (
-                    <option key={cat} value={cat}>{cat}</option>
-                  ))}
+                {CATEGORIES_CONFIG.filter(cat => !isKiosco || !cat.isSpecial).map(cat => (
+                  <option key={cat.id} value={cat.id}>{cat.icon} {cat.label}</option>
+                ))}
               </select>
             </div>
 

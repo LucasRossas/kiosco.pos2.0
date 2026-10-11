@@ -1,15 +1,28 @@
 import React, { useMemo, useState } from 'react';
 import { ArrowLeft, Banknote, CheckCircle2 } from 'lucide-react';
 
-const paymentLabels = { cash: 'Efectivo', transfer: 'Transferencia', card: 'Tarjeta / QR' };
+const paymentLabels = {
+  cash: 'Efectivo',
+  transfer: 'Transferencia',
+  card: 'Tarjeta',
+  qr_mp: 'QR Mercado Pago',
+  other: 'Otros'
+};
 
 export default function ShiftCloseScreen({ shift, sales, onCloseShift, onBack }) {
   const [cashActual, setCashActual] = useState('');
   const [notes, setNotes] = useState('');
   const shiftSales = sales.filter((sale) => sale.shiftId === shift.id && sale.type !== 'shift-close');
   const summary = useMemo(() => {
-    const byPayment = { cash: 0, transfer: 0, card: 0 };
-    shiftSales.forEach((sale) => { byPayment[sale.paymentMethod] = (byPayment[sale.paymentMethod] || 0) + sale.total; });
+    const byPayment = { cash: 0, transfer: 0, card: 0, qr_mp: 0, other: 0 };
+    shiftSales.forEach((sale) => {
+      const method = sale.paymentMethod;
+      if (Object.hasOwn(byPayment, method)) {
+        byPayment[method] += sale.total;
+      } else {
+        byPayment.other += sale.total;
+      }
+    });
     const withdrawals = (shift.withdrawals || []).reduce((sum, item) => sum + item.amount, 0);
     return { byPayment, withdrawals, total: shiftSales.reduce((sum, sale) => sum + sale.total, 0), expectedCash: shift.openingCash + byPayment.cash - withdrawals };
   }, [shift, shiftSales]);

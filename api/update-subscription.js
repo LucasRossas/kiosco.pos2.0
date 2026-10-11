@@ -2,11 +2,11 @@ import { getAdminDb, verifyFirebaseRequest } from './_lib/firebase-admin.js';
 import { setCorsHeaders, handleOptions } from './_lib/cors.js';
 
 const PRICES = {
-  promo: { kiosco: 25000, mercado: 42500 },
-  regular: { kiosco: 50000, mercado: 85000 },
+  kiosco: 9000,
+  mercado: 15000,
 };
 
-const ALLOWED_OPERATIONS = ['cancel', 'change-plan', 'finalize-promotion'];
+const ALLOWED_OPERATIONS = ['cancel', 'change-plan'];
 const ALLOWED_PLANS = ['kiosco', 'mercado'];
 
 export default async function handler(req, res) {
@@ -41,19 +41,12 @@ export default async function handler(req, res) {
       return res.status(403).json({ error: 'Acceso denegado' });
     }
 
-    const tenantData = tenantSnapshot.data();
-    const isPromoActive = tenantData?.promoActive === true;
-
     let updateData;
     if (operation === 'cancel') {
       updateData = { status: 'cancelled' };
     } else if (operation === 'change-plan') {
-      const price = PRICES[isPromoActive ? 'promo' : 'regular'][targetPlan];
+      const price = PRICES[targetPlan];
       if (!price) return res.status(400).json({ error: 'Precio no definido' });
-      updateData = { auto_recurring: { transaction_amount: price } };
-    } else if (operation === 'finalize-promotion') {
-      const price = PRICES.regular[targetPlan || tenantData?.plan];
-      if (!price) return res.status(400).json({ error: 'Precio regular no definido' });
       updateData = { auto_recurring: { transaction_amount: price } };
     }
 
@@ -107,8 +100,6 @@ export default async function handler(req, res) {
           downgradeDate,
         };
       }
-    } else if (operation === 'finalize-promotion') {
-      firestoreUpdate = { ...firestoreUpdate, promoActive: false };
     }
 
     await Promise.all([

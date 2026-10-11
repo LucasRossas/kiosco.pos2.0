@@ -31,7 +31,7 @@ export default function AccessKeyModal({ title, onConfirm, onClose }) {
           setLockoutTime(30);
         }
       }
-    } catch (err) {
+    } catch {
       setError('Error al verificar la clave.');
     } finally {
       setIsLoading(false);

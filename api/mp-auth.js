@@ -9,7 +9,14 @@ export default async function handler(req, res) {
 
   const { method } = req;
   const { action } = req.query;
-  const baseUrl = (process.env.APP_ORIGIN || 'https://puntogestionpos.com.ar').split(',')[0].trim().replace(/\/$/, '');
+  const appOriginStr = process.env.APP_ORIGIN;
+
+  if (!appOriginStr) {
+    console.error('ERROR: APP_ORIGIN no está definida en las variables de entorno.');
+    return res.status(500).json({ error: 'Configuración del servidor incompleta (APP_ORIGIN)' });
+  }
+
+  const baseUrl = appOriginStr.split(',')[0].trim().replace(/\/$/, '');
 
   if (method === 'GET') {
     const { code, state } = req.query;

@@ -1,18 +1,10 @@
-import crypto from 'node:crypto';
 import { getAdminDb, verifyFirebaseRequest } from './_lib/firebase-admin.js';
 import { setCorsHeaders, handleOptions } from './_lib/cors.js';
 import { round2, lineTotal } from './_lib/money.js';
 import { mpFetch } from './_lib/mp-token.js';
-
-const SPECIAL_CATEGORIES = new Set(['Verdulería', 'Fiambrería', 'Carnicería', 'Panadería']);
-
-function isTracked(product, item) {
-  return item.trackStock ?? !SPECIAL_CATEGORIES.has(product.category);
-}
-
-function getSaleId(tenantId, externalReference) {
-  return `qr-${crypto.createHash('sha256').update(`${tenantId}:${externalReference}`).digest('hex').slice(0, 40)}`;
-}
+import { isStockTracked } from './_lib/stock.js';
+import { BusinessError } from './_lib/errors.js';
+import { getSaleId, finalizeSale } from './_lib/sales.js';
 
 export default async function handler(req, res) {
   setCorsHeaders(req, res);
@@ -28,20 +20,19 @@ export default async function handler(req, res) {
 
     // Validar externalReference: pos-<uid>-<digitos>
     const refRegex = new RegExp(`^pos-${tenantId}-\\d+$`);
-    if (!externalReference || !refRegex.test(externalReference) || items.length === 0 || items.length > 100) {
+    if (!externalReference || !refRegex.test(externalReference) || items.length === 0) {
       return res.status(400).json({ error: 'Venta QR inválida' });
     }
 
     const db = getAdminDb();
     const tenantRef = db.collection('tenants').doc(tenantId);
 
+    // 1. Recalcular total y validar productos (Stock check se hace en la transacción)
     const productRefs = items.map((item) => tenantRef.collection('products').doc(String(item.productId || '').trim()));
-    if (productRefs.some((ref) => ref.id.length === 0)) return res.status(400).json({ error: 'Producto inválido' });
-
-    // Lectura inicial de productos para validación de precio y estructura
     const productSnapshots = await Promise.all(productRefs.map((ref) => ref.get()));
+
     if (productSnapshots.some((snapshot) => !snapshot.exists)) {
-      return res.status(400).json({ error: 'Producto no encontrado' });
+      throw new BusinessError('Uno o más productos no existen');
     }
 
     let calculatedTotal = 0;
@@ -49,117 +40,76 @@ export default async function handler(req, res) {
       const product = productSnapshots[index].data();
       const quantity = Number(item.quantity);
       const price = Number(product.price);
-      if (!Number.isFinite(quantity) || quantity <= 0 || !Number.isFinite(price) || price < 0) {
-        throw new Error('Cantidad o precio inválido');
-      }
       calculatedTotal += lineTotal(price, quantity);
       return {
         productId: productSnapshots[index].id,
         name: String(product.name || 'Producto'),
         quantity,
         price,
-        category: product.category || 'General',
-        isByWeight: Boolean(product.isByWeight),
-        trackStock: isTracked(product, item),
+        trackStock: isStockTracked(product),
       };
     });
-
     calculatedTotal = round2(calculatedTotal);
 
-    // Consultar el pago en Mercado Pago
-    const paymentSearch = await mpFetch(db, tenantId,
-      `https://api.mercadopago.com/v1/payments/search?external_reference=${encodeURIComponent(externalReference)}`,
+    // 2. Consultar la ORDEN en Mercado Pago (Prueba de verdad)
+    // Buscamos por external_reference para obtener la merchant_order
+    const mpSearchRes = await mpFetch(db, tenantId,
+      `https://api.mercadopago.com/merchant_orders/search?external_reference=${encodeURIComponent(externalReference)}`,
       { method: 'GET' }
     );
-    const paymentData = await paymentSearch.json();
-    if (!paymentSearch.ok) {
-        console.error("MP Search Error:", paymentData);
-        return res.status(502).json({ error: 'Error al verificar pago' });
+
+    if (!mpSearchRes.ok) {
+      throw new Error('Error al consultar estado en Mercado Pago');
     }
 
-    const payment = (paymentData.results || []).find((item) => (
-      item.status === 'approved' &&
-      item.external_reference === externalReference &&
-      Math.abs(Number(item.transaction_amount) - calculatedTotal) < 0.01
-    ));
+    const searchData = await mpSearchRes.json();
+    const order = (searchData.elements || []).find(o => o.external_reference === externalReference);
 
-    if (!payment) {
-        return res.status(409).json({ error: 'Pago no encontrado o monto inválido' });
+    if (!order) {
+      return res.status(404).json({ error: 'Orden no encontrada en Mercado Pago' });
     }
 
+    // Validar estado de la orden (closed = pagada en MP V2) y monto
+    const isPaid = order.status === 'closed' || order.order_status === 'paid';
+    const amountMatch = Math.abs(order.total_amount - calculatedTotal) < 0.01;
+    const approvedPayment = (order.payments || []).find(p => p.status === 'approved');
+
+    if (!isPaid || !amountMatch || !approvedPayment) {
+      return res.status(409).json({
+        error: 'La orden aún no está pagada o el monto no coincide',
+        mpStatus: order.status,
+        mpAmount: order.total_amount,
+        expectedAmount: calculatedTotal
+      });
+    }
+
+    const paymentId = String(approvedPayment.id);
     const saleId = getSaleId(tenantId, externalReference);
-    const saleRef = tenantRef.collection('sales').doc(saleId);
-    const claimRef = db.collection('qr_payment_claims').doc(String(payment.id));
 
-    const result = await db.runTransaction(async (transaction) => {
-      // 1. LECTURAS
-      const existingSale = await transaction.get(saleRef);
-      const existingClaim = await transaction.get(claimRef);
+    const saleData = {
+      id: saleId,
+      shiftId: String(sale.shiftId || ''),
+      cashier: String(sale.cashier || ''),
+      total: calculatedTotal,
+      paymentMethod: 'qr_mp',
+      items: normalizedItems,
+      externalReference,
+      merchantOrderId: String(order.id),
+      createdAt: new Date().toISOString(),
+    };
 
-      const currentProducts = [];
-      for (const productRef of productRefs) {
-        currentProducts.push(await transaction.get(productRef));
-      }
+    const result = await finalizeSale(tenantId, saleData, paymentId);
 
-      // 2. VALIDACIONES
-      if (existingSale.exists) return { idempotent: true, sale: existingSale.data() };
-
-      if (existingClaim.exists) {
-        const claimData = existingClaim.data();
-        if (claimData.saleId !== saleId) {
-          throw { statusCode: 409, message: 'Pago ya utilizado' };
-        }
-        // Si existe pero es el mismo saleId, tratamos como idempotente (aunque saleRef debería existir)
-        return { idempotent: true, sale: existingSale.data() };
-      }
-
-      for (let index = 0; index < currentProducts.length; index += 1) {
-        const product = currentProducts[index].data();
-        const item = normalizedItems[index];
-        if (item.trackStock && (product.stock === null || Number(product.stock) < item.quantity)) {
-          throw { statusCode: 400, message: `Stock insuficiente para ${product.name}` };
-        }
-      }
-
-      // 3. ESCRITURAS
-      const safeSale = {
-        id: saleId,
-        shiftId: String(sale.shiftId || ''),
-        cashier: String(sale.cashier || ''),
-        total: calculatedTotal,
-        paymentMethod: 'qr_mp',
-        items: normalizedItems,
-        externalReference: externalReference,
-        mercadoPagoPaymentId: String(payment.id),
-        createdAt: sale.createdAt || new Date().toISOString(),
-        updatedAt: new Date(),
-      };
-
-      transaction.set(saleRef, safeSale);
-
-      transaction.set(claimRef, {
-        saleId: saleId,
-        tenantId: tenantId,
-        createdAt: new Date().toISOString()
-      });
-
-      normalizedItems.forEach((item, index) => {
-        if (item.trackStock) {
-          const productRef = productRefs[index];
-          const currentStock = Number(currentProducts[index].data().stock);
-          transaction.update(productRef, { stock: currentStock - item.quantity, updatedAt: new Date() });
-        }
-      });
-
-      return { idempotent: false, sale: safeSale };
-    });
+    // Limpiar el índice de la orden ya procesada
+    await db.collection('qr_order_index').doc(externalReference).delete().catch(() => {});
 
     return res.status(200).json({ confirmed: true, ...result });
+
   } catch (error) {
-    console.error('confirm-qr-sale handler error:', error);
+    console.error('confirm-qr-sale error:', error);
     const status = error.statusCode || 500;
     return res.status(status).json({
-      error: status === 500 ? 'Error interno del servidor' : error.message
+      error: error instanceof BusinessError ? error.message : 'Error interno'
     });
   }
 }

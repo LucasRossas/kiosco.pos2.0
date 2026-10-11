@@ -3,7 +3,13 @@ import { ArrowLeft, Receipt, ShieldCheck, Printer, ExternalLink } from 'lucide-r
 import { getAfipQrUrl } from '../services/arca';
 import { toast } from 'sonner';
 
-const paymentLabels = { cash: 'Efectivo', transfer: 'Transferencia', card: 'QR / Tarjeta' };
+const paymentLabels = {
+  cash: 'Efectivo',
+  transfer: 'Transferencia',
+  card: 'Tarjeta',
+  qr_mp: 'QR Mercado Pago',
+  other: 'Otros'
+};
 
 export default function SalesSummaryScreen({ shift, sales, onBack }) {
   const [selectedSale, setSelectedSale] = useState(null);
@@ -15,11 +21,16 @@ export default function SalesSummaryScreen({ shift, sales, onBack }) {
   }, [sales, shift.id]);
 
   const summary = useMemo(() => {
-    const paymentTotals = { cash: 0, transfer: 0, card: 0 };
+    const paymentTotals = { cash: 0, transfer: 0, card: 0, qr_mp: 0, other: 0 };
     const soldProducts = {};
 
     shiftSales.forEach((sale) => {
-      paymentTotals[sale.paymentMethod] = (paymentTotals[sale.paymentMethod] || 0) + sale.total;
+      const method = sale.paymentMethod;
+      if (Object.hasOwn(paymentTotals, method)) {
+        paymentTotals[method] += sale.total;
+      } else {
+        paymentTotals.other += sale.total;
+      }
       (sale.items || []).forEach((item) => {
         const current = soldProducts[item.productId] || {
           name: item.name,

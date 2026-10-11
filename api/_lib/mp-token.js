@@ -1,5 +1,6 @@
 /**
- * Manejo de Access Token de Mercado Pago con soporte para Refresh Token automático
+ * Manejo de Access Token de Mercado Pago con soporte para Refresh Token automático.
+ * Implementa bloqueos atómicos en Firestore para evitar condiciones de carrera durante la renovación.
  */
 
 export async function getMercadoPagoAccessToken(db, tenantId) {
@@ -22,8 +23,42 @@ export async function getMercadoPagoAccessToken(db, tenantId) {
   return mpData.accessToken;
 }
 
-async function refreshMPToken(db, tenantId, refreshToken) {
+async function refreshMPToken(db, tenantId, oldRefreshToken) {
+  const privateRef = db.collection('private_integrations').doc(tenantId);
+  const lockDuration = 30000; // 30 segundos de lock
+
   try {
+    // 1. Intentar adquirir el bloqueo de renovación atómicamente
+    const result = await db.runTransaction(async (transaction) => {
+      const doc = await transaction.get(privateRef);
+      const data = doc.data()?.mercadoPago;
+
+      // Si el token ya fue renovado por otro proceso
+      if (data.refreshToken !== oldRefreshToken) {
+        return { action: 'use_new', token: data.accessToken };
+      }
+
+      // Si hay un proceso de renovación en curso (lock activo)
+      if (data.refreshingUntil && data.refreshingUntil > Date.now()) {
+        return { action: 'wait' };
+      }
+
+      // Adquirir el lock
+      transaction.update(privateRef, {
+        'mercadoPago.refreshingUntil': Date.now() + lockDuration
+      });
+      return { action: 'refresh' };
+    });
+
+    if (result.action === 'use_new') return result.token;
+    if (result.action === 'wait') {
+      // Esperar 2 segundos y reintentar obtener el token (ya debería estar renovado)
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      const freshSnap = await privateRef.get();
+      return freshSnap.data()?.mercadoPago?.accessToken;
+    }
+
+    // 2. Ejecutar la renovación (fuera de la transacción de Firestore)
     const { MP_CLIENT_ID, MP_CLIENT_SECRET } = process.env;
     const response = await fetch('https://api.mercadopago.com/oauth/token', {
       method: 'POST',
@@ -32,7 +67,7 @@ async function refreshMPToken(db, tenantId, refreshToken) {
         client_id: MP_CLIENT_ID,
         client_secret: MP_CLIENT_SECRET,
         grant_type: 'refresh_token',
-        refresh_token: refreshToken,
+        refresh_token: oldRefreshToken,
       }),
     });
 
@@ -40,24 +75,31 @@ async function refreshMPToken(db, tenantId, refreshToken) {
 
     if (!response.ok) {
       console.error(`Error renovando token para ${tenantId}:`, data);
-      // Deshabilitar la integración si el refresh falla
-      await db.collection('tenants').doc(tenantId).collection('config').doc('settings').set({
-        mercadoPagoConfig: { habilitado: false }
-      }, { merge: true });
-      throw { statusCode: 409, message: 'La conexión con Mercado Pago expiró. Reconectá desde Configuración.' };
+
+      // Liberar el lock en caso de error para permitir reintentos posteriores
+      await privateRef.update({ 'mercadoPago.refreshingUntil': 0 });
+
+      // Si el refresh token es inválido, deshabilitar integración
+      if (data.error === 'invalid_grant') {
+        await db.collection('tenants').doc(tenantId).collection('config').doc('settings').set({
+          mercadoPagoConfig: { habilitado: false }
+        }, { merge: true });
+        throw { statusCode: 409, message: 'La conexión con Mercado Pago expiró. Reconectá desde Configuración.' };
+      }
+      throw { statusCode: 500, message: 'Error al renovar token de Mercado Pago' };
     }
 
     const expiresAt = Date.now() + (data.expires_in * 1000);
     const newAccessToken = data.access_token;
 
-    await db.collection('private_integrations').doc(tenantId).set({
-      mercadoPago: {
-        accessToken: newAccessToken,
-        refreshToken: data.refresh_token,
-        expiresAt,
-        updatedAt: new Date().toISOString()
-      }
-    }, { merge: true });
+    // 3. Guardar nuevo token y liberar el lock
+    await privateRef.update({
+      'mercadoPago.accessToken': newAccessToken,
+      'mercadoPago.refreshToken': data.refresh_token,
+      'mercadoPago.expiresAt': expiresAt,
+      'mercadoPago.updatedAt': new Date().toISOString(),
+      'mercadoPago.refreshingUntil': 0
+    });
 
     return newAccessToken;
   } catch (error) {
@@ -79,14 +121,16 @@ export async function mpFetch(db, tenantId, url, options = {}) {
 
   let response = await makeRequest(token);
 
+  // Si da 401, forzar una renovación sin importar la fecha de expiración guardada
   if (response.status === 401) {
     const privateSnap = await db.collection('private_integrations').doc(tenantId).get();
-    const refreshToken = privateSnap.data()?.mercadoPago?.refreshToken;
-    if (refreshToken) {
-      token = await refreshMPToken(db, tenantId, refreshToken);
+    const mpData = privateSnap.data()?.mercadoPago;
+    if (mpData?.refreshToken) {
+      token = await refreshMPToken(db, tenantId, mpData.refreshToken);
       response = await makeRequest(token);
     }
   }
 
   return response;
 }
+

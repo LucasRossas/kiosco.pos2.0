@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import { getAdminDb } from './_lib/firebase-admin.js';
+import { checkAndMarkProcessing, markAsCompleted, markAsFailed } from './_lib/idempotency.js';
 
 const MAX_SIGNATURE_AGE_SECONDS = 5 * 60;
 
@@ -31,70 +32,77 @@ function verifySignature(req, resourceId) {
 }
 
 export default async function handler(req, res) {
-  // No CORS para webhooks (MP llama directamente)
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
-  const queryResourceId = req.query?.['data.id'];
   const bodyResourceId = req.body?.data?.id;
-
-  if (String(queryResourceId || bodyResourceId) === '123456') {
-    return res.status(200).send('OK');
-  }
-
+  const queryResourceId = req.query?.['data.id'];
   const resourceId = bodyResourceId || req.query?.id || queryResourceId;
+
+  if (String(resourceId) === '123456') return res.status(200).send('OK');
+
   if (!verifySignature(req, resourceId)) {
     console.error('Webhook signature verification failed');
     return res.status(401).json({ error: 'Firma inválida' });
   }
 
   try {
-    if (!process.env.MP_ACCESS_TOKEN) throw new Error('Config missing');
-
-    const type = req.body?.type;
-    if (type !== 'subscription_preapproval' && type !== 'subscription_preapproval_plan') {
-      return res.status(200).json({ ignored: true });
-    }
-
-    const response = await fetch(`https://api.mercadopago.com/preapproval/${encodeURIComponent(resourceId)}`, {
-      headers: { Authorization: `Bearer ${process.env.MP_ACCESS_TOKEN}` },
-    });
-    if (!response.ok) throw new Error('Verificación fallida');
-
-    const subscription = await response.json();
-    const tenantId = subscription.external_reference;
-    if (!tenantId) throw new Error('External reference missing');
-
     const db = getAdminDb();
-    const tenantRef = db.collection('tenants').doc(tenantId);
-    const tenantSnapshot = await tenantRef.get();
 
-    if (!tenantSnapshot.exists || tenantSnapshot.data()?.subscriptionId !== resourceId) {
-       if (tenantSnapshot.data()?.subscriptionId) {
-         return res.status(200).send('Mismatch');
-       }
+    // Para suscripciones, no siempre tenemos tenantId al inicio, usamos el resourceId
+    // El tenantId se extraerá de la suscripción misma luego de validarla.
+    const { shouldProcess, status } = await checkAndMarkProcessing(String(resourceId), 'system_subscription', 'subscription_webhook');
+
+    if (!shouldProcess) {
+      console.log(`[Subscription Webhook] Ya procesado: ${resourceId} (${status})`);
+      return res.status(200).send('OK');
     }
 
-    const status = subscription.status;
-    let update = {
-      subscriptionStatus: status,
-      lastStatusUpdate: new Date(),
-    };
+    try {
+      if (!process.env.MP_ACCESS_TOKEN) throw new Error('Config missing');
 
-    if (status === 'authorized') {
-      update.isActive = true;
-      update.status = 'active';
-      update.activatedAt = new Date();
-    } else if (status === 'cancelled' || status === 'paused') {
-      update.isActive = false;
-      update.status = 'inactive';
+      const type = req.body?.type;
+      if (type !== 'subscription_preapproval' && type !== 'subscription_preapproval_plan') {
+        await markAsCompleted(String(resourceId), 'ignored');
+        return res.status(200).json({ ignored: true });
+      }
+
+      const response = await fetch(`https://api.mercadopago.com/preapproval/${encodeURIComponent(resourceId)}`, {
+        headers: { Authorization: `Bearer ${process.env.MP_ACCESS_TOKEN}` },
+      });
+      if (!response.ok) throw new Error('Verificación fallida en MP');
+
+      const subscription = await response.json();
+      const tenantId = subscription.external_reference;
+      if (!tenantId) throw new Error('External reference missing in subscription');
+
+      const tenantRef = db.collection('tenants').doc(tenantId);
+      const status = subscription.status;
+      let update = {
+        subscriptionStatus: status,
+        lastStatusUpdate: new Date(),
+      };
+
+      if (status === 'authorized') {
+        update.isActive = true;
+        update.status = 'active';
+        update.activatedAt = new Date();
+      } else if (status === 'cancelled' || status === 'paused') {
+        update.isActive = false;
+        update.status = 'inactive';
+      }
+
+      await Promise.all([
+        tenantRef.set(update, { merge: true }),
+        db.collection('users').doc(tenantId).set(update, { merge: true }),
+      ]);
+
+      await markAsCompleted(String(resourceId), tenantId);
+      return res.status(200).json({ status });
+
+    } catch (innerError) {
+      await markAsFailed(String(resourceId), innerError.message);
+      throw innerError;
     }
-
-    await Promise.all([
-      tenantRef.set(update, { merge: true }),
-      db.collection('users').doc(tenantId).set(update, { merge: true }),
-    ]);
-
-    return res.status(200).json({ status });
   } catch (error) {
     console.error('Webhook error:', error);
     return res.status(200).send('Handled');

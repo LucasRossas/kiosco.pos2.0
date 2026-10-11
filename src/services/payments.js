@@ -8,54 +8,26 @@ async function getAuthorizationHeaders() {
 }
 
 /**
- * Actualiza el precio de una suscripción en Mercado Pago y marca la promo como finalizada en Firestore.
- * Utilizado para el fin de la promoción de 3 meses.
- */
-export async function finalizePromotion(tenantId, currentPlan, subscriptionId) {
-  if (!subscriptionId) return;
-
-  // Usamos el proxy de Vercel para mayor seguridad con el token
-  const mpResponse = await fetch(`${API_BASE_URL}/api/update-subscription`, {
-    method: 'POST',
-    headers: await getAuthorizationHeaders(),
-    body: JSON.stringify({
-      subscriptionId,
-        operation: 'finalize-promotion',
-        targetPlan: currentPlan
-    })
-  });
-
-  if (!mpResponse.ok) {
-    throw new Error('No se pudo actualizar el precio en Mercado Pago');
-  }
-
-  await mpResponse.json();
-
-  return true;
-}
-
-/**
  * Cambia el plan de suscripción en Mercado Pago y Firestore (Client-Side).
  * Maneja Upgrade (inmediato) y Downgrade (programado).
  */
-export async function changeSubscriptionPlan(tenantId, currentPlan, targetPlan, subscriptionId, isPromoActive) {
+export async function changeSubscriptionPlan(tenantId, currentPlan, targetPlan, subscriptionId) {
   if (!subscriptionId) throw new Error('No se encontró ID de suscripción activa.');
 
-  // 1. Actualizar Mercado Pago vía proxy de Vercel
+  // 1. Actualizar Mercado Pago vía servidor del backend
   const mpResponse = await fetch(`${API_BASE_URL}/api/update-subscription`, {
     method: 'POST',
     headers: await getAuthorizationHeaders(),
     body: JSON.stringify({
       subscriptionId,
         operation: 'change-plan',
-        targetPlan,
-        promoActive: isPromoActive
+        targetPlan
     })
   });
 
   if (!mpResponse.ok) {
     const errorData = await mpResponse.json();
-    throw new Error(errorData.message || 'Error al actualizar suscripción en Mercado Pago');
+    throw new Error(errorData.error || errorData.message || 'Error al actualizar suscripción en Mercado Pago');
   }
 
   const data = await mpResponse.json();

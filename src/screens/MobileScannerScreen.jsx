@@ -11,6 +11,7 @@ import {
   Smartphone,
   Tag
 } from 'lucide-react';
+import { CATEGORIES_CONFIG } from '../config/categories';
 import { toast } from 'sonner';
 import {
   findTenantProductByBarcode,
@@ -520,21 +521,20 @@ export default function MobileScannerScreen() {
                   <div className="mt-4 px-2">
                     <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-2 block">Rubro / Categoría</label>
                     <div className="flex gap-2 overflow-x-auto pb-2 no-scrollbar">
-                      {['General', 'Almacén', 'Quiosco', 'Fiambrería', 'Verdulería', 'Carnicería'].map((cat) => (
+                      {CATEGORIES_CONFIG.map((cat) => (
                         <button
-                          key={cat}
+                          key={cat.id}
                           type="button"
                           onClick={() => {
-                            const isWeighable = ['Carnicería', 'Verdulería', 'Fiambrería'].includes(cat);
-                            setForm({ ...form, category: cat, isByWeight: isWeighable });
+                            setForm({ ...form, category: cat.id, isByWeight: cat.isWeight || false });
                           }}
                           className={`flex-shrink-0 px-5 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all border-2 ${
-                            form.category === cat
+                            form.category === cat.id
                               ? 'bg-slate-900 text-white border-slate-900 shadow-xl shadow-slate-200'
                               : 'bg-white text-slate-400 border-slate-50 hover:border-slate-200'
                           }`}
                         >
-                          {cat}
+                          {cat.icon} {cat.label}
                         </button>
                       ))}
                     </div>

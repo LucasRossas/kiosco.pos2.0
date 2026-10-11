@@ -52,7 +52,7 @@ export default function OnboardingScreen({ planElegido, onBackToLogin, onNavigat
           provincia: formData.provincia
         },
         plan: planElegido,
-        price: planElegido === 'kiosco' ? 50000 : 85000,
+        price: planElegido === 'kiosco' ? 9000 : 15000,
         status: 'pending_payment',
         subscriptionStatus: 'pending',
         isActive: false,

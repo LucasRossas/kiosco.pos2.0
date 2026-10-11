@@ -4,11 +4,11 @@ import { setCorsHeaders, handleOptions } from './_lib/cors.js';
 const OFFICIAL_PLANS = {
   kiosco: {
     name: 'Kiosco',
-    price: 25000
+    price: 9000
   },
   mercado: {
     name: 'Mercado',
-    price: 42500
+    price: 15000
   }
 };
 
@@ -41,11 +41,29 @@ export default async function handler(req, res) {
     const tenantData = tenantSnap.data();
 
     const currentStatus = tenantData?.subscriptionStatus;
-    if (currentStatus === 'authorized' || currentStatus === 'pending') {
-      return res.status(409).json({
-        error: 'Suscripción activa o pendiente',
-        subscriptionId: tenantData.subscriptionId
-      });
+    const existingSubId = tenantData?.subscriptionId;
+
+    if (existingSubId && (currentStatus === 'authorized' || currentStatus === 'pending')) {
+      try {
+        const MP_ACCESS_TOKEN = process.env.MP_ACCESS_TOKEN;
+        const checkRes = await fetch(`https://api.mercadopago.com/preapproval/${existingSubId}`, {
+          headers: { 'Authorization': `Bearer ${MP_ACCESS_TOKEN}` }
+        });
+        if (checkRes.ok) {
+          const mpData = await checkRes.json();
+          if (mpData.status === 'authorized') {
+            return res.status(409).json({
+              error: 'Suscripción activa o pendiente',
+              subscriptionId: existingSubId
+            });
+          }
+          if (mpData.status === 'pending' && mpData.init_point) {
+            return res.status(200).json(mpData);
+          }
+        }
+      } catch (err) {
+        console.error('Error verificando suscripción previa:', err);
+      }
     }
 
     const selectedPlan = OFFICIAL_PLANS[planKey];
@@ -72,11 +90,14 @@ export default async function handler(req, res) {
 
     const MP_ACCESS_TOKEN = process.env.MP_ACCESS_TOKEN;
     const APP_ORIGIN_API = process.env.APP_ORIGIN_API;
+    const APP_ORIGIN_STR = process.env.APP_ORIGIN;
 
-    if (!MP_ACCESS_TOKEN || !APP_ORIGIN_API) {
-      console.error('CRITICAL: MP_ACCESS_TOKEN or APP_ORIGIN_API not configured');
+    if (!MP_ACCESS_TOKEN || !APP_ORIGIN_API || !APP_ORIGIN_STR) {
+      console.error('CRITICAL: MP_ACCESS_TOKEN, APP_ORIGIN_API or APP_ORIGIN not configured');
       return res.status(500).json({ error: 'Error interno de configuración' });
     }
+
+    const appOrigin = APP_ORIGIN_STR.split(',')[0].trim();
 
     const mpResponse = await fetch('https://api.mercadopago.com/preapproval', {
       method: 'POST',
@@ -93,7 +114,7 @@ export default async function handler(req, res) {
           currency_id: 'ARS'
         },
         payer_email: email,
-        back_url: `${(process.env.APP_ORIGIN || 'https://puntogestionpos.com.ar').split(',')[0]}/?payment=pending`,
+        back_url: `${appOrigin}/?payment=pending`,
         notification_url: `${APP_ORIGIN_API}/api/mercadopago-webhook`,
         external_reference: tenantId,
         status: 'pending'

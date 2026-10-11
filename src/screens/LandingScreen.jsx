@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { ArrowRight, BarChart3, Barcode, Check, ChevronDown, ShieldCheck, Sparkles, Store, Zap } from 'lucide-react';
+import { ArrowRight, BarChart3, Barcode, Check, ChevronDown, ShieldCheck, Sparkles, Store } from 'lucide-react';
 import Footer from '../components/Footer';
 import AppScreenshotsCarousel from '../components/AppScreenshotsCarousel';
 
@@ -7,9 +7,7 @@ const plans = [
   {
     id: 'kiosco',
     name: 'Kiosco',
-    regularPrice: '$50.000',
-    discountPrice: '$25.000',
-    promoLabel: '🔥 PROMOCIÓN: 50% OFF x 3 Meses',
+    price: '$9.000',
     description: 'Velocidad y control para tu día a día. Ideal para atención rápida.',
     features: [
       '1 Caja de cobro habilitada.',
@@ -22,9 +20,7 @@ const plans = [
   {
     id: 'mercado',
     name: 'Mercado',
-    regularPrice: '$85.000',
-    discountPrice: '$42.500',
-    promoLabel: '🔥 PROMOCIÓN: 50% OFF x 3 Meses',
+    price: '$15.000',
     description: 'Potencia total para minimercados y comercios en crecimiento.',
     features: [
       'Hasta 3 Cajas de cobro en simultáneo.',
@@ -54,7 +50,7 @@ export default function LandingScreen({ onRegister, onLogin, onNavigateTerms, on
     { q: '¿Es compatible con factura electrónica?', a: 'Sí, PuntoGestión se integra directamente con ARCA (ex AFIP) para emitir Facturas C de forma legal y rápida con un solo clic desde el sistema.' },
     { q: '¿Qué hardware necesito para empezar?', a: 'Podés usarlo en cualquier PC, notebook o tablet. Para escanear, podés usar un lector de códigos de barras USB convencional o incluso tu celular a través de nuestra terminal móvil.' },
     { q: '¿El sistema funciona si se corta internet?', a: '¡Sí! Contamos con tecnología de sincronización offline. Podés seguir vendiendo y, en cuanto la conexión regrese, los datos se sincronizarán automáticamente con la nube.' },
-    { q: '¿Cómo funciona la promoción del 50% OFF?', a: 'Al suscribirte hoy, pagás solo la mitad del abono mensual durante los primeros 3 meses. Es nuestra forma de apoyarte en el arranque o la migración de tu negocio.' },
+    { q: '¿Cómo funciona la suscripción?', a: 'Al suscribirte hoy, accedés al plan elegido con un abono mensual fijo. Podés cancelar en cualquier momento desde los ajustes de tu cuenta sin costos adicionales.' },
     { q: '¿Tengo límite de productos o ventas?', a: 'El Plan Kiosco permite hasta 300 productos, mientras que el Plan Mercado es totalmente ilimitado. En ambos planes podés realizar ventas sin restricciones mensuales.' },
     { q: '¿Puedo exportar mi información?', a: 'Absolutamente. Podés descargar reportes de ventas y listados de stock en formato PDF o Excel para tu contabilidad o control personal en cualquier momento.' },
     { q: '¿Cómo recibo las actualizaciones?', a: 'PuntoGestión es una plataforma web moderna, por lo que las actualizaciones de seguridad y nuevas funciones son automáticas y gratuitas. Siempre tendrás la última versión.' },
@@ -96,7 +92,7 @@ export default function LandingScreen({ onRegister, onLogin, onNavigateTerms, on
             className="bg-slate-900 text-white px-8 py-4 rounded-full text-lg font-bold shadow-xl hover:-translate-y-1 transition-all flex items-center gap-3 mx-auto"
             onClick={() => document.getElementById('planes')?.scrollIntoView({ behavior: 'smooth' })}
           >
-            Ver Planes y Promo <ArrowRight size={20} />
+            Ver Planes <ArrowRight size={20} />
           </button>
         </section>
 
@@ -156,14 +152,6 @@ export default function LandingScreen({ onRegister, onLogin, onNavigateTerms, on
                     </div>
                   )}
 
-                  {/* Badge de Promoción Impactante */}
-                  <div className="mb-8">
-                    <span className="inline-flex items-center gap-2 rounded-xl bg-amber-500/10 border border-amber-500/20 px-4 py-2 text-[11px] font-black text-amber-500 shadow-sm">
-                      <Zap size={14} fill="currentColor" />
-                      {plan.promoLabel}
-                    </span>
-                  </div>
-
                   <h3 className={`text-2xl font-black ${plan.featured ? 'text-slate-900' : 'text-white'} mb-3`}>
                     Plan {plan.name}
                   </h3>
@@ -174,12 +162,9 @@ export default function LandingScreen({ onRegister, onLogin, onNavigateTerms, on
                   {/* Jerarquía de Precios Refactorizada */}
                   <div className={`mb-10 p-6 rounded-3xl border ${plan.featured ? 'bg-slate-50 border-slate-100' : 'bg-slate-800/50 border-slate-700/50'}`}>
                     <div className="flex flex-col">
-                      <span className="text-sm font-bold text-slate-400 line-through decoration-slate-400/60 decoration-2 mb-1">
-                        {plan.regularPrice}
-                      </span>
                       <div className="flex items-baseline gap-1.5">
                         <strong className={`text-5xl font-black tracking-tighter ${plan.featured ? 'text-blue-600' : 'text-white'}`}>
-                          {plan.discountPrice}
+                          {plan.price}
                         </strong>
                         <span className={`${plan.featured ? 'text-slate-500' : 'text-slate-400'} text-xs font-black uppercase tracking-widest`}>
                           /mes
@@ -209,12 +194,8 @@ export default function LandingScreen({ onRegister, onLogin, onNavigateTerms, on
                       }`}
                       onClick={() => onRegister(plan.id)}
                     >
-                      Suscribirme con Descuento
+                      Suscribirme
                     </button>
-
-                    <p className={`text-center text-[10px] font-bold uppercase tracking-tighter ${plan.featured ? 'text-slate-400' : 'text-slate-500'}`}>
-                      A partir del 4to mes se abonará el precio regular
-                    </p>
                   </div>
                 </article>
               ))}

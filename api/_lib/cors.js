@@ -1,16 +1,23 @@
 export function setCorsHeaders(req, res) {
   const origin = req.headers.origin;
-  const appOriginStr = process.env.APP_ORIGIN || 'https://puntogestionpos.com.ar';
+  const appOriginStr = process.env.APP_ORIGIN;
+
+  if (!appOriginStr) {
+    console.error('ERROR: APP_ORIGIN no está definida en las variables de entorno.');
+    return;
+  }
+
   const allowedOrigins = appOriginStr.split(',').map(o => o.trim());
 
-  if (process.env.VERCEL_ENV !== 'production') {
+  if (process.env.APP_ENV !== 'production') {
     allowedOrigins.push('http://localhost:5173');
+    allowedOrigins.push('http://localhost:3000');
   }
+
+  res.setHeader('Vary', 'Origin');
 
   if (origin && allowedOrigins.includes(origin)) {
     res.setHeader('Access-Control-Allow-Origin', origin);
-  } else {
-    res.setHeader('Access-Control-Allow-Origin', allowedOrigins[0] || 'null');
   }
 
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
@@ -24,16 +31,4 @@ export function handleOptions(req, res) {
     return true;
   }
   return false;
-}
-
-export function getAllowedOrigin(req) {
-  const origin = req.headers.origin;
-  const appOriginStr = process.env.APP_ORIGIN || 'https://puntogestionpos.com.ar';
-  const allowedOrigins = appOriginStr.split(',').map(o => o.trim());
-
-  if (process.env.VERCEL_ENV !== 'production') {
-    allowedOrigins.push('http://localhost:5173');
-  }
-
-  return (origin && allowedOrigins.includes(origin)) ? origin : (allowedOrigins[0] || 'null');
 }

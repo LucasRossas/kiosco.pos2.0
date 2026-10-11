@@ -25,6 +25,7 @@ import {
   clearIndexedDbPersistence,
 } from 'firebase/firestore';
 import { API_BASE_URL } from './api';
+import { shouldTrackStock, isSpecialCategory } from '../config/categories';
 
 const firebaseConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
@@ -428,6 +429,38 @@ export async function saveHybridProduct(tenantId, product) {
   } catch (err) { console.error("Global sync error:", err); }
 }
 
+export function listenQrOrder(tenantId, externalReference, callback) {
+  const database = getOfflineFirestore();
+  if (!database || !tenantId || !externalReference) return () => {};
+
+  const docRef = doc(database, 'tenants', tenantId, 'qr_orders', externalReference);
+  return onSnapshot(docRef, (snapshot) => {
+    if (snapshot.exists()) {
+      callback(snapshot.data());
+    }
+  }, (error) => {
+    console.error("Error escuchando orden QR:", error);
+  });
+}
+
+export function listenQrPayments(tenantId, externalReference, callback) {
+  const database = getOfflineFirestore();
+  if (!database || !tenantId) return () => {};
+
+  const q = query(
+    collection(database, 'tenants', tenantId, 'qr_payments'),
+    where('externalReference', '==', externalReference)
+  );
+
+  return onSnapshot(q, (snapshot) => {
+    snapshot.docChanges().forEach((change) => {
+      if (change.type === 'added' || change.type === 'modified') {
+        callback(change.doc.data());
+      }
+    });
+  });
+}
+
 export function listenProducts(tenantId, callback) {
   const database = getOfflineFirestore();
   if (!database || !tenantId || tenantId === 'demo-commerce') return () => {};
@@ -623,18 +656,12 @@ export async function processSaleTransaction(tenantId, sale) {
     updatedAt: serverTimestamp()
   });
 
-  // 2. Descontar stock para cada item (solo si no es por peso y no es categoría especial)
+  // 2. Descontar stock para cada item
   for (const item of sale.items) {
     if (!item.productId) continue;
 
-    const isSpecialCategory = ['Verdulería', 'Fiambrería', 'Carnicería', 'Panadería'].includes(item.category);
-    // Permitimos descuento de stock si se trackea explícitamente o si no es categoría especial.
-    // Los productos por peso (decimales) ahora descuentan stock atómicamente por defecto si no son de categoría especial.
-    const shouldUpdateStock = item.trackStock ?? !isSpecialCategory;
-
-    if (shouldUpdateStock) {
+    if (shouldTrackStock(item)) {
       const productRef = doc(database, 'tenants', tenantId, 'products', item.productId);
-      // Usamos Number() para asegurar que el decremento sea numérico exacto (soporta decimales/kilos)
       const qty = Number(item.quantity || 0);
       if (qty > 0) {
         batch.update(productRef, {
@@ -666,7 +693,7 @@ export async function updateProductInventoryAtomic(tenantId, scan) {
 
   try {
     const isWeight = scan.isByWeight || false;
-    const isSpecial = ['Verdulería', 'Fiambrería', 'Carnicería', 'Panadería'].includes(scan.category);
+    const isSpecial = isSpecialCategory(scan.category);
 
     // Si es categoría especial y no es pesado, permitimos stock.
     // Si es pesado, permitimos stock decimal a menos que se indique lo contrario.
