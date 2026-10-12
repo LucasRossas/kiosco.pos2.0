@@ -9,21 +9,32 @@ export default async function handler(req, res) {
 
   const { method } = req;
   const { action } = req.query;
-  const appOriginStr = process.env.APP_ORIGIN;
+  const appOrigin = (process.env.APP_ORIGIN || '').split(',')[0].trim().replace(/\/$/, '');
 
-  if (!appOriginStr) {
-    console.error('ERROR: APP_ORIGIN no está definida en las variables de entorno.');
-    return res.status(500).json({ error: 'Configuración del servidor incompleta (APP_ORIGIN)' });
-  }
+  try {
+    // 1. INICIAR OAUTH (GET o POST /api/mp/oauth/start)
+    if (action === 'start') {
+      const decodedToken = await verifyFirebaseRequest(req);
+      const state = createOAuthState(decodedToken.uid);
+      const { MP_CLIENT_ID, MP_REDIRECT_URI } = process.env;
 
-  const baseUrl = appOriginStr.split(',')[0].trim().replace(/\/$/, '');
+      // Devolvemos los datos para que el frontend construya la URL o el frontend puede redirigir
+      return res.status(200).json({
+        url: `https://auth.mercadopago.com.ar/authorization?client_id=${MP_CLIENT_ID}&response_type=code&platform_id=mp&state=${state}&redirect_uri=${MP_REDIRECT_URI}`,
+        state,
+        clientId: MP_CLIENT_ID,
+        redirectUri: MP_REDIRECT_URI
+      });
+    }
 
-  if (method === 'GET') {
-    const { code, state } = req.query;
-    if (!code || !state) return res.status(400).send('Faltan parámetros: code o state');
+    // 2. CALLBACK (GET /api/mp/oauth/callback)
+    if (action === 'callback') {
+      const { code, state } = req.query;
+      if (!code || !state) return res.redirect(`${appOrigin}/settings?mp=error&msg=missing_params`);
 
-    try {
       const verified = verifyOAuthState(state);
+      if (!verified) return res.redirect(`${appOrigin}/settings?mp=error&msg=invalid_state`);
+
       const tenantId = verified.uid;
       const { MP_CLIENT_ID, MP_CLIENT_SECRET, MP_REDIRECT_URI } = process.env;
 
@@ -34,75 +45,90 @@ export default async function handler(req, res) {
           client_id: MP_CLIENT_ID,
           client_secret: MP_CLIENT_SECRET,
           grant_type: 'authorization_code',
-          code: code,
+          code,
           redirect_uri: MP_REDIRECT_URI,
         }),
       });
 
       const data = await tokenResponse.json();
-      if (!tokenResponse.ok) throw new Error(data.message || 'Error al obtener tokens de Mercado Pago');
-
-      const expiresAt = Date.now() + (data.expires_in * 1000);
+      if (!tokenResponse.ok) throw new Error(data.message || 'Error al obtener tokens de MP');
 
       const db = getAdminDb();
-      await db.runTransaction(async (transaction) => {
-        const privateRef = db.collection('private_integrations').doc(tenantId);
-        const publicRef = db.collection('tenants').doc(tenantId).collection('config').doc('settings');
-        transaction.set(privateRef, {
+      const expiresAt = Date.now() + (data.expires_in * 1000);
+
+      await db.runTransaction(async (t) => {
+        const privRef = db.collection('private_integrations').doc(tenantId);
+        t.set(privRef, {
           mercadoPago: {
             accessToken: data.access_token,
             refreshToken: data.refresh_token,
+            publicKey: data.public_key,
             userId: data.user_id,
-            expiresAt,
-            updatedAt: new Date().toISOString()
+            expiresAt: expiresAt,
+            connectedAt: new Date().toISOString(),
+            status: 'connected'
           }
         }, { merge: true });
-        transaction.set(publicRef, {
+
+        const pubRef = db.collection('tenants').doc(tenantId).collection('config').doc('settings');
+        t.set(pubRef, {
           mercadoPagoConfig: {
-            userId: data.user_id,
             habilitado: true,
-            vinculadoAt: new Date().toISOString()
+            connected: true,
+            userId: data.user_id,
+            vinculadoAt: new Date().toISOString(),
+            publicKey: data.public_key
           }
         }, { merge: true });
       });
 
-      return res.redirect(`${baseUrl}/settings?mp_status=success`);
-    } catch (error) {
-      console.error('Error OAuth MP:', error);
-      // No devolver error.message en el HTML, redirigir con estado de error
-      return res.redirect(`${baseUrl}/settings?mp_status=error`);
+      return res.redirect(`${appOrigin}/settings?mp=connected`);
     }
-  }
 
-  if (method === 'POST') {
-    try {
-      const token = await verifyFirebaseRequest(req);
+    // 3. STATUS (GET /api/mp/status)
+    if (action === 'status') {
+      const decodedToken = await verifyFirebaseRequest(req);
+      const db = getAdminDb();
+      const privDoc = await db.collection('private_integrations').doc(decodedToken.uid).get();
+
+      const mpData = privDoc.data()?.mercadoPago;
+      return res.status(200).json({
+        connected: !!mpData,
+        userId: mpData?.userId || null,
+        connectedAt: mpData?.connectedAt || null
+      });
+    }
+
+    // 4. DISCONNECT (POST /api/mp/oauth/disconnect)
+    if (action === 'disconnect') {
+      const decodedToken = await verifyFirebaseRequest(req);
       const db = getAdminDb();
 
-      if (action === 'disconnect') {
-        // Usar set con merge: true en lugar de update para evitar fallos si el documento no existe
-        await db.collection('private_integrations').doc(token.uid).set({
+      await db.runTransaction(async (t) => {
+        const privRef = db.collection('private_integrations').doc(decodedToken.uid);
+        t.set(privRef, {
           mercadoPago: admin.firestore.FieldValue.delete()
         }, { merge: true });
 
-        await db.collection('tenants').doc(token.uid).collection('config').doc('settings').set({
-          mercadoPagoConfig: { habilitado: false, userId: null, vinculadoAt: null }
+        const pubRef = db.collection('tenants').doc(decodedToken.uid).collection('config').doc('settings');
+        t.set(pubRef, {
+          mercadoPagoConfig: {
+            habilitado: false,
+            connected: false,
+            userId: null,
+            vinculadoAt: null,
+            qrImageUrl: null
+          }
         }, { merge: true });
-
-        return res.status(200).json({ success: true });
-      }
-
-      return res.status(200).json({
-        state: createOAuthState(token.uid),
-        clientId: process.env.MP_CLIENT_ID,
-        redirectUri: process.env.MP_REDIRECT_URI
       });
-    } catch (error) {
-      console.error('Error en mp-auth POST:', error);
-      const status = error.statusCode || 500;
-      return res.status(status).json({ error: status === 500 ? 'Error interno del servidor' : error.message });
-    }
-  }
 
-  return res.status(405).json({ error: 'Method not allowed' });
+      return res.status(200).json({ success: true });
+    }
+
+    return res.status(404).json({ error: 'Acción no reconocida' });
+  } catch (error) {
+    console.error('Error en mp-auth:', error);
+    if (action === 'callback') return res.redirect(`${appOrigin}/settings?mp=error`);
+    return res.status(error.statusCode || 500).json({ error: error.message });
+  }
 }

@@ -1,33 +1,32 @@
-import crypto from 'node:crypto';
+import crypto from 'crypto';
 
-function encode(value) {
-  return Buffer.from(JSON.stringify(value)).toString('base64url');
-}
+const OAUTH_SECRET = process.env.JWT_SECRET || 'fallback-secret-for-oauth-state';
 
-function sign(value) {
-  const secret = process.env.MP_OAUTH_STATE_SECRET;
-  if (!secret) throw new Error('MP_OAUTH_STATE_SECRET no configurado');
-  return crypto.createHmac('sha256', secret).update(value).digest('base64url');
-}
-
+/**
+ * Crea un state firmado que contiene el UID del usuario.
+ */
 export function createOAuthState(uid) {
-  const payload = encode({ uid, exp: Date.now() + 10 * 60 * 1000 });
-  return `${payload}.${sign(payload)}`;
+  const expiry = Date.now() + 10 * 60 * 1000; // 10 minutos
+  const payload = Buffer.from(JSON.stringify({ uid, expiry })).toString('base64');
+  const signature = crypto.createHmac('sha256', OAUTH_SECRET).update(payload).digest('hex');
+  return `${payload}.${signature}`;
 }
 
+/**
+ * Verifica el state y devuelve el payload si es válido y no expiró.
+ */
 export function verifyOAuthState(state) {
-  const [payload, signature] = String(state || '').split('.');
-  if (!payload || !signature) throw new Error('state OAuth inválido');
-  const expected = sign(payload);
-  const valid = signature.length === expected.length && crypto.timingSafeEqual(
-    Buffer.from(signature),
-    Buffer.from(expected)
-  );
-  if (!valid) throw new Error('state OAuth inválido');
+  try {
+    const [payloadBase64, signature] = state.split('.');
+    const expectedSignature = crypto.createHmac('sha256', OAUTH_SECRET).update(payloadBase64).digest('hex');
 
-  const data = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
-  if (!data.uid || !Number.isFinite(data.exp) || data.exp < Date.now()) {
-    throw new Error('state OAuth expirado');
+    if (signature !== expectedSignature) return null;
+
+    const payload = JSON.parse(Buffer.from(payloadBase64, 'base64').toString());
+    if (Date.now() > payload.expiry) return null;
+
+    return payload;
+  } catch (e) {
+    return null;
   }
-  return data;
 }

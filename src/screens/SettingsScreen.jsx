@@ -60,13 +60,18 @@ export default function SettingsScreen({ settings, onSaveSettings, tenantId, onA
   // Manejar respuesta del OAuth
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    const mpStatus = params.get('mp_status');
-    if (mpStatus === 'success') {
+    const mpStatus = params.get('mp');
+
+    if (mpStatus === 'connected') {
       toast.success('¡Mercado Pago conectado con éxito!');
       // Limpiar URL
       window.history.replaceState({}, document.title, window.location.pathname);
     } else if (mpStatus === 'error') {
-      toast.error('Error al conectar Mercado Pago: ' + params.get('message'));
+      const msg = params.get('msg');
+      const errorMessage = msg === 'invalid_state' ? 'Sesión de seguridad expirada.' :
+                         msg === 'missing_params' ? 'Faltan parámetros de respuesta.' :
+                         'Error en la vinculación.';
+      toast.error('Error al conectar Mercado Pago: ' + errorMessage);
       window.history.replaceState({}, document.title, window.location.pathname);
     }
   }, []);
@@ -116,24 +121,17 @@ export default function SettingsScreen({ settings, onSaveSettings, tenantId, onA
         throw new Error(errorData.error || `Error del servidor (${response.status})`);
       }
 
-      const { state, clientId, redirectUri } = await response.json();
+      const data = await response.json();
+      const { url } = data;
 
-      if (!clientId || !redirectUri) {
-        throw new Error('El servidor no devolvió la configuración necesaria (Client ID o Redirect URI).');
+      if (!url) {
+        throw new Error('El servidor no devolvió la URL de autorización.');
       }
-
-      // Construcción robusta con platform_id=mp para forzar la vinculación
-      const authUrl = new URL('https://auth.mercadopago.com.ar/authorization');
-      authUrl.searchParams.append('client_id', clientId);
-      authUrl.searchParams.append('response_type', 'code');
-      authUrl.searchParams.append('platform_id', 'mp');
-      authUrl.searchParams.append('redirect_uri', redirectUri);
-      authUrl.searchParams.append('state', state);
 
       toast.success('Redirigiendo a Mercado Pago...', { id: toastId });
 
       setTimeout(() => {
-        window.location.href = authUrl.toString();
+        window.location.href = url;
       }, 600);
 
     } catch (error) {
@@ -192,7 +190,7 @@ export default function SettingsScreen({ settings, onSaveSettings, tenantId, onA
       if (!user) throw new Error('Sesión no encontrada');
 
       const token = await user.getIdToken();
-      const response = await fetch(`${API_BASE_URL}/api/qr-setup`, {
+      const response = await fetch(`${API_BASE_URL}/api/mp/setup-pos`, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${token}`,

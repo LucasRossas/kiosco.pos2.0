@@ -215,6 +215,7 @@ export default function App() {
       return undefined;
     }
     const firebaseAuth = getFirebaseAuth();
+    if (!firebaseAuth) return undefined;
     return firebaseAuth.onAuthStateChanged(async (user) => {
       try {
         // Si estamos en la página de recuperación (o en la URL de acción de Firebase), no interferir con el flujo

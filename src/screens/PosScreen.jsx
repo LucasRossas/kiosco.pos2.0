@@ -93,14 +93,10 @@ export default function PosScreen({
         const currentUser = getFirebaseAuth()?.currentUser;
         if (currentUser) {
           const token = await currentUser.getIdToken();
-          await fetch(`${API_BASE_URL}/api/qr-order`, {
-            method: 'POST',
+          await fetch(`${API_BASE_URL}/api/mp/qr-order`, {
+            method: 'DELETE',
             headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-            body: JSON.stringify({
-              action: 'cancel',
-              externalReference: mpExternalRef,
-              posExternalId: settings.mercadoPagoConfig?.posExternalId
-            })
+            body: JSON.stringify({ external_reference: mpExternalRef })
           });
         }
       } catch (e) {
@@ -442,8 +438,8 @@ export default function PosScreen({
       return;
     }
 
-    setIsMpLoading(true);
-    const externalReference = `pos-${tenantId}-${Date.now()}`;
+    const saleId = Date.now().toString();
+    const externalReference = `${tenantId}_${saleId}`;
     setMpExternalRef(externalReference);
     setMpModalOpen(true);
 
@@ -453,18 +449,23 @@ export default function PosScreen({
       const token = await currentUser.getIdToken();
 
       const payload = {
-        action: 'create',
-        externalReference,
-        posExternalId: config.posExternalId,
-        shiftId: currentShift?.id,
-        cashier: currentShift?.cashier,
+        amount: total,
+        external_reference: externalReference,
+        description: `Venta en ${settings.storeName || 'Comercio'}`,
         items: cart.map(item => ({
-          productId: item.id,
-          quantity: Number(item.quantity) || 1
-        }))
+          title: item.name,
+          unit_price: Number(item.price),
+          quantity: Number(item.quantity),
+          total_amount: Number(item.lineTotal)
+        })),
+        saleMetadata: {
+          shiftId: currentShift?.id,
+          cashier: currentShift?.cashier,
+          items: cart.map(item => ({ ...item, lineTotal: getLineTotal(item) }))
+        }
       };
 
-      const response = await fetch(`${API_BASE_URL}/api/qr-order`, {
+      const response = await fetch(`${API_BASE_URL}/api/mp/qr-order`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

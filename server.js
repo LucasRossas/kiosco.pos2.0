@@ -36,9 +36,27 @@ const handle = (modulePath, options = {}) => async (req, res) => {
   }
 };
 
-// Vercel Rewrites Mapping
-app.all('/api/mercadopago-oauth-state', handle('./api/mp-auth.js'));
-app.all('/api/mercadopago-callback', handle('./api/mp-auth.js'));
+// Mercado Pago OAuth Routes
+app.get('/api/mp/oauth/start', handle('./api/mp-auth.js', {
+  modifyReq: (req) => { req.query.action = 'start'; }
+}));
+app.get('/api/mp/oauth/callback', handle('./api/mp-auth.js', {
+  modifyReq: (req) => { req.query.action = 'callback'; }
+}));
+app.get('/api/mp/status', handle('./api/mp-auth.js', {
+  modifyReq: (req) => { req.query.action = 'status'; }
+}));
+app.get('/api/mp/pos', handle('./api/mp-pos.js'));
+app.post('/api/mp/setup-pos', handle('./api/mp-pos.js'));
+app.post('/api/mp/qr-order', handle('./api/mp-order.js'));
+
+// Vercel Rewrites Mapping (Legacy)
+app.all('/api/mercadopago-oauth-state', handle('./api/mp-auth.js', {
+  modifyReq: (req) => { req.query.action = 'start'; }
+}));
+app.all('/api/mercadopago-callback', handle('./api/mp-auth.js', {
+  modifyReq: (req) => { req.query.action = 'callback'; }
+}));
 app.all('/api/mercadopago-disconnect', handle('./api/mp-auth.js', {
   modifyReq: (req) => { req.query = { ...req.query, action: 'disconnect' }; }
 }));

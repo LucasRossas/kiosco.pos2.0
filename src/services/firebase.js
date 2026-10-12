@@ -69,15 +69,27 @@ export function getOfflineFirestore() {
 
 export function getFirebaseApp() {
   if (!hasFirebaseConfig) return null;
-  if (!firebaseApp) firebaseApp = getApps().length > 0 ? getApps()[0] : initializeApp(firebaseConfig);
+  if (!firebaseApp) {
+    const apps = getApps();
+    firebaseApp = apps.length > 0 ? apps[0] : initializeApp(firebaseConfig);
+  }
   return firebaseApp;
 }
 
 export function getFirebaseAuth() {
   if (!hasFirebaseConfig) return null;
-  if (!auth) {
-    auth = getAuth(getFirebaseApp());
+  if (auth) return auth;
+  const app = getFirebaseApp();
+  if (!app) return null;
+  try {
+    // Verificamos si ya existe una instancia de Auth para este app
+    const existingAuth = getAuth(app);
+    auth = existingAuth;
     setPersistence(auth, browserLocalPersistence).catch(() => {});
+  } catch (error) {
+    // Si falla por registro, devolvemos null preventivamente
+    console.error('Error al obtener Firebase Auth:', error);
+    return null;
   }
   return auth;
 }

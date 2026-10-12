@@ -8,15 +8,15 @@ export async function getMercadoPagoAccessToken(db, tenantId) {
   const privateSnap = await privateRef.get();
   const mpData = privateSnap.data()?.mercadoPago;
 
-  if (!mpData?.accessToken || !mpData?.refreshToken) {
+  if (!mpData?.accessToken) {
     throw { statusCode: 409, message: 'Mercado Pago no está vinculado' };
   }
 
-  // Si vence en menos de 7 días, renovar
+  // Si vence en menos de 7 días y tenemos refresh token, renovar
   const sevenDays = 7 * 24 * 60 * 60 * 1000;
   const isExpired = mpData.expiresAt && (Date.now() + sevenDays > mpData.expiresAt);
 
-  if (isExpired) {
+  if (isExpired && mpData.refreshToken) {
     return await refreshMPToken(db, tenantId, mpData.refreshToken);
   }
 
