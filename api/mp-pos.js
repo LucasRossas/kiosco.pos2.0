@@ -125,6 +125,7 @@ export default async function handler(req, res) {
         const publicRef = db.collection('tenants').doc(tenantId).collection('config').doc('settings');
         t.set(publicRef, {
           mercadoPagoConfig: {
+            habilitado: true, // Aseguramos que quede habilitado
             qrImageUrl: qrConfig.qrImage,
             posExternalId: qrConfig.externalPosId,
             posName: finalPos.name,
