@@ -1,5 +1,6 @@
 import express from 'express';
 import dotenv from 'dotenv';
+import { setCorsHeaders, handleOptions } from './api/_lib/cors.js';
 
 // Load environment variables
 dotenv.config();
@@ -12,6 +13,13 @@ const port = process.env.PORT || 3000;
 app.set('trust proxy', 1);
 app.disable('x-powered-by');
 app.use(express.json({ limit: '1mb' }));
+
+// Middleware global para CORS en todas las rutas /api
+app.use('/api', (req, res, next) => {
+  setCorsHeaders(req, res);
+  if (handleOptions(req, res)) return;
+  next();
+});
 
 // Health Check
 app.get('/health', (req, res) => {
@@ -37,18 +45,18 @@ const handle = (modulePath, options = {}) => async (req, res) => {
 };
 
 // Mercado Pago OAuth Routes
-app.get('/api/mp/oauth/start', handle('./api/mp-auth.js', {
+app.all('/api/mp/oauth/start', handle('./api/mp-auth.js', {
   modifyReq: (req) => { req.query.action = 'start'; }
 }));
-app.get('/api/mp/oauth/callback', handle('./api/mp-auth.js', {
+app.all('/api/mp/oauth/callback', handle('./api/mp-auth.js', {
   modifyReq: (req) => { req.query.action = 'callback'; }
 }));
-app.get('/api/mp/status', handle('./api/mp-auth.js', {
+app.all('/api/mp/status', handle('./api/mp-auth.js', {
   modifyReq: (req) => { req.query.action = 'status'; }
 }));
-app.get('/api/mp/pos', handle('./api/mp-pos.js'));
-app.post('/api/mp/setup-pos', handle('./api/mp-pos.js'));
-app.post('/api/mp/qr-order', handle('./api/mp-order.js'));
+app.all('/api/mp/pos', handle('./api/mp-pos.js'));
+app.all('/api/mp/setup-pos', handle('./api/mp-pos.js'));
+app.all('/api/mp/qr-order', handle('./api/mp-order.js'));
 
 // Vercel Rewrites Mapping (Legacy)
 app.all('/api/mercadopago-oauth-state', handle('./api/mp-auth.js', {

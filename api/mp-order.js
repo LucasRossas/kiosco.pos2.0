@@ -92,11 +92,18 @@ export default async function handler(req, res) {
         saleMetadata
       });
 
-      // Índice para el Webhook
-      await db.collection('qr_order_index').doc(external_reference).set({
+      // Índice para el Webhook (por external_reference y por ID de orden de MP)
+      const indexData = {
         tenantId,
+        external_reference,
         createdAt: new Date()
-      });
+      };
+
+      await db.collection('qr_order_index').doc(external_reference).set(indexData);
+
+      if (mpOrder.id) {
+        await db.collection('qr_order_index').doc(String(mpOrder.id)).set(indexData);
+      }
 
       return res.status(200).json({ order_id: mpOrder.id, status: 'created', external_reference });
     }
