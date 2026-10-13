@@ -54,20 +54,8 @@ app.all('/api/mp/oauth/callback', handle('./api/mp-auth.js', {
 app.all('/api/mp/status', handle('./api/mp-auth.js', {
   modifyReq: (req) => { req.query.action = 'status'; }
 }));
-app.all('/api/mp/pos', handle('./api/mp-pos.js'));
-app.all('/api/mp/setup-pos', handle('./api/mp-pos.js'));
+app.all('/api/mp/setup-pos', handle('./api/setup-pos.js'));
 app.all('/api/mp/qr-order', handle('./api/mp-order.js'));
-
-// Vercel Rewrites Mapping (Legacy)
-app.all('/api/mercadopago-oauth-state', handle('./api/mp-auth.js', {
-  modifyReq: (req) => { req.query.action = 'start'; }
-}));
-app.all('/api/mercadopago-callback', handle('./api/mp-auth.js', {
-  modifyReq: (req) => { req.query.action = 'callback'; }
-}));
-app.all('/api/mercadopago-disconnect', handle('./api/mp-auth.js', {
-  modifyReq: (req) => { req.query = { ...req.query, action: 'disconnect' }; }
-}));
 
 // Default API Routes
 app.all('/api/arca', handle('./api/arca.js'));

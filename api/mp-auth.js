@@ -7,7 +7,6 @@ export default async function handler(req, res) {
   setCorsHeaders(req, res);
   if (handleOptions(req, res)) return;
 
-  const { method } = req;
   const { action } = req.query;
   const appOrigin = (process.env.APP_ORIGIN || '').split(',')[0].trim().replace(/\/$/, '');
 
@@ -103,21 +102,30 @@ export default async function handler(req, res) {
     if (action === 'disconnect') {
       const decodedToken = await verifyFirebaseRequest(req);
       const db = getAdminDb();
+      const tenantId = decodedToken.uid;
+
+      console.log(`[MP Auth] Desconectando tenant: ${tenantId}`);
 
       await db.runTransaction(async (t) => {
-        const privRef = db.collection('private_integrations').doc(decodedToken.uid);
+        const privRef = db.collection('private_integrations').doc(tenantId);
+        const pubRef = db.collection('tenants').doc(tenantId).collection('config').doc('settings');
+
+        // Borramos tokens privados
         t.set(privRef, {
           mercadoPago: admin.firestore.FieldValue.delete()
         }, { merge: true });
 
-        const pubRef = db.collection('tenants').doc(decodedToken.uid).collection('config').doc('settings');
+        // Limpiamos configuración pública de QR y estado
         t.set(pubRef, {
           mercadoPagoConfig: {
             habilitado: false,
             connected: false,
             userId: null,
             vinculadoAt: null,
-            qrImageUrl: null
+            qrImageUrl: null,
+            posName: null,
+            posExternalId: null,
+            qrConfigs: {} // Limpiamos todas las cajas
           }
         }, { merge: true });
       });

@@ -38,7 +38,10 @@ export default async function handler(req, res) {
   const queryResourceId = req.query?.['data.id'];
   const resourceId = bodyResourceId || req.query?.id || queryResourceId;
 
-  if (String(resourceId) === '123456') return res.status(200).send('OK');
+  // Bypass solo para testing local
+  if (process.env.NODE_ENV !== 'production' && String(resourceId) === '123456') {
+    return res.status(200).send('OK');
+  }
 
   if (!verifySignature(req, resourceId)) {
     console.error('Webhook signature verification failed');
@@ -76,17 +79,17 @@ export default async function handler(req, res) {
       if (!tenantId) throw new Error('External reference missing in subscription');
 
       const tenantRef = db.collection('tenants').doc(tenantId);
-      const status = subscription.status;
+      const mpStatus = subscription.status;
       let update = {
-        subscriptionStatus: status,
+        subscriptionStatus: mpStatus,
         lastStatusUpdate: new Date(),
       };
 
-      if (status === 'authorized') {
+      if (mpStatus === 'authorized') {
         update.isActive = true;
         update.status = 'active';
         update.activatedAt = new Date();
-      } else if (status === 'cancelled' || status === 'paused') {
+      } else if (mpStatus === 'cancelled' || mpStatus === 'paused') {
         update.isActive = false;
         update.status = 'inactive';
       }
@@ -97,7 +100,7 @@ export default async function handler(req, res) {
       ]);
 
       await markAsCompleted(String(resourceId), tenantId);
-      return res.status(200).json({ status });
+      return res.status(200).json({ status: mpStatus });
 
     } catch (innerError) {
       await markAsFailed(String(resourceId), innerError.message);
@@ -105,6 +108,7 @@ export default async function handler(req, res) {
     }
   } catch (error) {
     console.error('Webhook error:', error);
-    return res.status(200).send('Handled');
+    // Devolvemos 500 para que Mercado Pago reintente en errores transitorios
+    return res.status(500).json({ error: error.message });
   }
 }

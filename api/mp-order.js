@@ -27,7 +27,7 @@ export default async function handler(req, res) {
     // --- MANEJO DE CANCELACIÓN (DELETE) ---
     if (req.method === 'DELETE') {
       const url = `https://api.mercadopago.com/instore/qr/seller/collectors/${userId}/pos/${externalPosId}/orders`;
-      const mpRes = await mpFetch(db, tenantId, url, { method: 'DELETE' });
+      await mpFetch(db, tenantId, url, { method: 'DELETE' });
 
       if (req.body?.external_reference) {
         await db.collection('tenants').doc(tenantId).collection('qr_orders').doc(req.body.external_reference).update({

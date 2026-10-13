@@ -433,8 +433,25 @@ export default function PosScreen({
 
     const config = settings.mercadoPagoConfig;
 
-    if (!config?.habilitado || !config?.posExternalId) {
-      toast.error('Configuración de Mercado Pago QR V2 incompleta. Ve a Configuración.');
+    if (!config?.habilitado) {
+      toast.error('Configuración de Mercado Pago incompleta. Ve a Configuración.');
+      return;
+    }
+
+    // Identificar qué caja (1, 2, 3) corresponde al Punto de Venta actual
+    // Si no hay mapeo explícito, usamos el número de registro si es predecible, o la Caja 1 por defecto.
+    const registerName = currentShift?.registerName || '';
+    const posMatch = registerName.match(/\d+/);
+    const posIndex = posMatch ? parseInt(posMatch[0]) : 1;
+
+    // Buscar la configuración específica para esta caja
+    const specificConfig = config.qrConfigs?.[posIndex] || config.qrConfigs?.['1'] || {
+      posExternalId: config.posExternalId,
+      qrImageUrl: config.qrImageUrl
+    };
+
+    if (!specificConfig?.posExternalId) {
+      toast.error(`No hay un QR configurado para la ${registerName || 'Caja 1'}. Ve a Configuración.`);
       return;
     }
 
@@ -452,6 +469,7 @@ export default function PosScreen({
         amount: total,
         external_reference: externalReference,
         description: `Venta en ${settings.storeName || 'Comercio'}`,
+        external_pos_id: specificConfig.posExternalId, // IMPORTANTE: Enviar el ID correcto del POS
         items: cart.map(item => ({
           title: item.name,
           unit_price: Number(item.price),
@@ -991,18 +1009,25 @@ export default function PosScreen({
             </div>
             <div className="py-6 flex flex-col items-center">
               <div className="bg-white p-4 rounded-xl shadow-inner mb-4 border-2 border-dashed border-gray-200">
-                {settings.mercadoPagoConfig?.qrImageUrl ? (
-                  <>
-                    <img src={settings.mercadoPagoConfig.qrImageUrl} alt="QR Mercado Pago" className="w-[200px] h-[200px] object-contain mx-auto" />
-                    <p className="text-[10px] text-gray-400 mt-2 font-bold uppercase tracking-widest">
-                      ESCANEÁ EL QR DEL MOSTRADOR
-                    </p>
-                  </>
-                ) : (
-                  <div className="w-[200px] h-[200px] flex items-center justify-center">
-                     <QrCode size={40} className="animate-pulse text-gray-300" />
-                  </div>
-                )}
+                {(() => {
+                  const registerName = currentShift?.registerName || '';
+                  const posMatch = registerName.match(/\d+/);
+                  const posIndex = posMatch ? parseInt(posMatch[0]) : 1;
+                  const qrUrl = settings.mercadoPagoConfig?.qrConfigs?.[posIndex]?.qrImageUrl || settings.mercadoPagoConfig?.qrImageUrl;
+
+                  return qrUrl ? (
+                    <>
+                      <img src={qrUrl} alt="QR Mercado Pago" className="w-[200px] h-[200px] object-contain mx-auto" />
+                      <p className="text-[10px] text-gray-400 mt-2 font-bold uppercase tracking-widest">
+                        ESCANEÁ EL QR DE LA {registerName.toUpperCase() || 'CAJA 1'}
+                      </p>
+                    </>
+                  ) : (
+                    <div className="w-[200px] h-[200px] flex items-center justify-center">
+                       <QrCode size={40} className="animate-pulse text-gray-300" />
+                    </div>
+                  );
+                })()}
               </div>
               <p className="text-sm text-gray-600 mb-1">Total a cobrar:</p>
               <p className="text-2xl font-black text-slate-800 mb-4">{formatCurrency(total)}</p>

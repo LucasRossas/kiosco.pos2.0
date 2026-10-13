@@ -26,7 +26,7 @@ export function verifyOAuthState(state) {
     if (Date.now() > payload.expiry) return null;
 
     return payload;
-  } catch (e) {
+  } catch {
     return null;
   }
 }
