@@ -40,73 +40,94 @@ export default async function handler(req, res) {
       const externalStoreId = `tenant_${tenantId}`;
       const externalPosId = `tenant_${tenantId}_pos1`;
 
-      // A. Crear o Buscar Sucursal
+      // A. Buscar o Crear Sucursal
       let mpStoreId;
-      const storePayload = {
-        name: "Sucursal Principal",
-        external_id: externalStoreId,
-        location: {
-          street_number: "S/N",
-          street_name: address,
-          city_name: city,
-          state_name: state,
-          latitude: latitude ? Number(latitude) : undefined,
-          longitude: longitude ? Number(longitude) : undefined
+
+      // 1. Intentar buscar primero por external_id
+      const searchStore = await mpFetch(db, tenantId, `https://api.mercadopago.com/users/${mpUserId}/stores/search?external_id=${externalStoreId}`);
+      const searchStoreData = await searchStore.json();
+
+      if (searchStore.ok && searchStoreData.results?.length > 0) {
+        mpStoreId = searchStoreData.results[0].id;
+        console.log(`Sucursal encontrada: ${mpStoreId}`);
+      } else {
+        // 2. Si no existe, crearla
+        const storePayload = {
+          name: "Sucursal Principal",
+          external_id: externalStoreId,
+          location: {
+            street_number: "S/N",
+            street_name: address,
+            city_name: city,
+            state_name: state,
+            latitude: latitude ? Number(latitude) : undefined,
+            longitude: longitude ? Number(longitude) : undefined
+          }
+        };
+
+        const storeRes = await mpFetch(db, tenantId, `https://api.mercadopago.com/users/${mpUserId}/stores`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(storePayload)
+        });
+
+        const storeData = await storeRes.json();
+        if (storeRes.ok) {
+          mpStoreId = storeData.id;
+        } else if (storeData.message?.includes('already assigned')) {
+          // Re-intento de búsqueda por si hubo una race condition
+          const retry = await mpFetch(db, tenantId, `https://api.mercadopago.com/users/${mpUserId}/stores/search?external_id=${externalStoreId}`);
+          const retryData = await retry.json();
+          mpStoreId = retryData.results?.[0]?.id;
         }
-      };
-
-      const storeRes = await mpFetch(db, tenantId, `https://api.mercadopago.com/users/${mpUserId}/stores`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(storePayload)
-      });
-
-      const storeData = await storeRes.json();
-
-      if (storeRes.ok) {
-        mpStoreId = storeData.id;
-      } else if (storeData.code === 'store_external_id_already_exists') {
-        const search = await mpFetch(db, tenantId, `https://api.mercadopago.com/users/${mpUserId}/stores/search?external_id=${externalStoreId}`);
-        const searchData = await search.json();
-        mpStoreId = searchData.results?.[0]?.id;
       }
 
-      if (!mpStoreId) throw new Error(storeData.message || 'Error al crear sucursal en MP');
+      if (!mpStoreId) throw new Error('No se pudo determinar el ID de la sucursal en Mercado Pago.');
 
-      // B. Crear o Buscar Caja (POS)
+      // B. Buscar o Crear Caja (POS)
       let finalPos;
-      const posPayload = {
-        name: "Caja Principal POS",
-        fixed_amount: true,
-        external_id: externalPosId,
-        external_store_id: externalStoreId,
-        category: 621101, // Retail
-        config: {
-          qr: { operating_mode: "pdv" }
+
+      // 1. Intentar buscar primero por external_id
+      const searchPos = await mpFetch(db, tenantId, `https://api.mercadopago.com/pos?external_id=${externalPosId}`);
+      const searchPosData = await searchPos.json();
+
+      if (searchPos.ok && searchPosData.results?.length > 0) {
+        finalPos = searchPosData.results[0];
+        console.log(`Caja encontrada: ${finalPos.id}`);
+      } else {
+        // 2. Si no existe, crearla
+        const posPayload = {
+          name: "Caja Principal POS",
+          fixed_amount: true,
+          external_id: externalPosId,
+          external_store_id: externalStoreId,
+          category: 621101, // Retail
+          config: {
+            qr: { operating_mode: "pdv" }
+          }
+        };
+
+        const posRes = await mpFetch(db, tenantId, `https://api.mercadopago.com/pos`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Idempotency-Key': `setup-pos-${tenantId}`
+          },
+          body: JSON.stringify(posPayload)
+        });
+
+        const posData = await posRes.json();
+        if (posRes.ok) {
+          finalPos = posData;
+        } else if (posData.message?.includes('already assigned')) {
+          const retryPos = await mpFetch(db, tenantId, `https://api.mercadopago.com/pos?external_id=${externalPosId}`);
+          const retryPosData = await retryPos.json();
+          finalPos = retryPosData.results?.[0];
         }
-      };
-
-      const posRes = await mpFetch(db, tenantId, `https://api.mercadopago.com/pos`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Idempotency-Key': `setup-pos-${tenantId}`
-        },
-        body: JSON.stringify(posPayload)
-      });
-
-      const posData = await posRes.json();
-
-      if (posRes.ok) {
-        finalPos = posData;
-      } else if (posData.code === 'pos_external_id_already_exists') {
-        const getPos = await mpFetch(db, tenantId, `https://api.mercadopago.com/pos?external_id=${externalPosId}`);
-        const getPosData = await getPos.json();
-        finalPos = getPosData.results?.[0];
       }
 
       if (!finalPos || !finalPos.qr) {
-        throw new Error(posData.message || 'Error al configurar caja en MP');
+        throw new Error('Error al configurar o recuperar la caja en Mercado Pago.');
       }
 
       const qrConfig = {

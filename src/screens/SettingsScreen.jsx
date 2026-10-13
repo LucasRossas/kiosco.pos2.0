@@ -35,20 +35,24 @@ export default function SettingsScreen({ settings, onSaveSettings, tenantId, onA
     setIsGettingLocation(true);
     navigator.geolocation.getCurrentPosition(
       (position) => {
+        const lat = position.coords.latitude;
+        const lng = position.coords.longitude;
+
         setQrForm(prev => ({
           ...prev,
-          latitude: position.coords.latitude,
-          longitude: position.coords.longitude
+          latitude: Number(lat.toFixed(6)),
+          longitude: Number(lng.toFixed(6))
         }));
+
         setIsGettingLocation(false);
         toast.success('Ubicación obtenida con éxito.');
       },
       (error) => {
         console.error('Error getting location:', error);
         setIsGettingLocation(false);
-        toast.error('No pudimos obtener tu ubicación. Por favor, ingresala manualmente o asegúrate de dar permisos.');
+        toast.error('No pudimos obtener tu ubicación. Por favor, asegúrate de dar permisos de GPS.');
       },
-      { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 }
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
     );
   };
 
@@ -681,18 +685,24 @@ export default function SettingsScreen({ settings, onSaveSettings, tenantId, onA
                       </div>
                       <div className="location-coords-grid">
                         <input
-                          type="number"
-                          step="any"
+                          type="text"
+                          inputMode="decimal"
                           placeholder="Latitud"
                           value={qrForm.latitude}
-                          onChange={e => setQrForm({...qrForm, latitude: e.target.value})}
+                          onChange={e => {
+                            const val = e.target.value.replace(/[^0-9.-]/g, '');
+                            setQrForm({...qrForm, latitude: val});
+                          }}
                         />
                         <input
-                          type="number"
-                          step="any"
+                          type="text"
+                          inputMode="decimal"
                           placeholder="Longitud"
                           value={qrForm.longitude}
-                          onChange={e => setQrForm({...qrForm, longitude: e.target.value})}
+                          onChange={e => {
+                            const val = e.target.value.replace(/[^0-9.-]/g, '');
+                            setQrForm({...qrForm, longitude: val});
+                          }}
                         />
                       </div>
                       <p className="location-coords-hint">
