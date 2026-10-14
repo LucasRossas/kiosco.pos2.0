@@ -45,7 +45,11 @@ export default function SettingsScreen({ settings, onSaveSettings, tenantId, onA
   const mpRequest = async (path, options = {}) => {
     try {
       const auth = getFirebaseAuth();
-      const token = await auth.currentUser.getIdToken();
+      const currentUser = auth.currentUser;
+      if (!currentUser) throw new Error('Usuario no autenticado');
+
+      const token = await currentUser.getIdToken(true); // Forzar refresh del token
+
       const res = await fetch(`${API_BASE_URL}${path}`, {
         ...options,
         headers: {
@@ -54,6 +58,14 @@ export default function SettingsScreen({ settings, onSaveSettings, tenantId, onA
           'Content-Type': 'application/json'
         }
       });
+
+      const contentType = res.headers.get("content-type");
+      if (!contentType || !contentType.includes("application/json")) {
+        const text = await res.text();
+        console.error("Respuesta no-JSON detectada:", text.substring(0, 200));
+        throw new Error(`Error del servidor (${res.status}). Intentá de nuevo.`);
+      }
+
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Error en la comunicación con MP');
       return data;
@@ -163,8 +175,12 @@ export default function SettingsScreen({ settings, onSaveSettings, tenantId, onA
       const data = await mpRequest('/api/mp/setup-pos?action=list-stores');
       setStores(Array.isArray(data) ? data : []);
     } catch (err) {
-      toast.error("No se pudieron cargar las sucursales");
+      toast.error(err.message || "No se pudieron cargar las sucursales");
       setStores([]);
+      // Si el error es de autenticación o vinculación, podemos resetear el modo
+      if (err.message.includes("vinculado") || err.message.includes("conectado")) {
+        setConfigMode(null);
+      }
     } finally {
       setIsLoadingMPData(false);
     }

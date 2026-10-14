@@ -1,7 +1,7 @@
 import { getAdminDb, verifyFirebaseRequest } from './_lib/firebase-admin.js';
 import { createOAuthState, verifyOAuthState } from './_lib/oauth-state.js';
 import { setCorsHeaders, handleOptions } from './_lib/cors.js';
-import admin from 'firebase-admin';
+import { FieldValue } from 'firebase-admin/firestore';
 
 export default async function handler(req, res) {
   setCorsHeaders(req, res);
@@ -11,32 +11,54 @@ export default async function handler(req, res) {
   const appOrigin = (process.env.APP_ORIGIN || '').split(',')[0].trim().replace(/\/$/, '');
 
   try {
-    // 1. INICIAR OAUTH (GET o POST /api/mp/oauth/start)
+    // 1. INICIAR OAUTH (Construcción limpia con URLSearchParams)
     if (action === 'start') {
       const decodedToken = await verifyFirebaseRequest(req);
       const state = createOAuthState(decodedToken.uid);
       const { MP_CLIENT_ID, MP_REDIRECT_URI } = process.env;
 
-      // Devolvemos los datos para que el frontend construya la URL o el frontend puede redirigir
+      if (!MP_CLIENT_ID || !MP_REDIRECT_URI) {
+        throw new Error('Configuración de Mercado Pago incompleta (MP_CLIENT_ID o MP_REDIRECT_URI)');
+      }
+
+      // Usamos URLSearchParams para asegurar que la redirect_uri y el state se codifiquen correctamente
+      const params = new URLSearchParams({
+        client_id: MP_CLIENT_ID,
+        response_type: 'code',
+        platform_id: 'mp',
+        state: state,
+        redirect_uri: MP_REDIRECT_URI
+      });
+
+      const authUrl = `https://auth.mercadopago.com.ar/authorization?${params.toString()}`;
+
       return res.status(200).json({
-        url: `https://auth.mercadopago.com.ar/authorization?client_id=${MP_CLIENT_ID}&response_type=code&platform_id=mp&state=${state}&redirect_uri=${MP_REDIRECT_URI}`,
+        url: authUrl,
         state,
         clientId: MP_CLIENT_ID,
         redirectUri: MP_REDIRECT_URI
       });
     }
 
-    // 2. CALLBACK (GET /api/mp/oauth/callback)
+    // 2. CALLBACK (Intercambio de código por token)
     if (action === 'callback') {
       const { code, state } = req.query;
-      if (!code || !state) return res.redirect(`${appOrigin}/settings?mp=error&msg=missing_params`);
+
+      if (!code || !state) {
+        console.error('[MP OAuth] Callback fallido: faltan parámetros', { code: !!code, state: !!state });
+        return res.redirect(`${appOrigin}/settings?mp=error&msg=missing_params`);
+      }
 
       const verified = verifyOAuthState(state);
-      if (!verified) return res.redirect(`${appOrigin}/settings?mp=error&msg=invalid_state`);
+      if (!verified) {
+        console.error('[MP OAuth] State inválido o expirado');
+        return res.redirect(`${appOrigin}/settings?mp=error&msg=invalid_state`);
+      }
 
       const tenantId = verified.uid;
       const { MP_CLIENT_ID, MP_CLIENT_SECRET, MP_REDIRECT_URI } = process.env;
 
+      // El redirect_uri aquí debe ser IDÉNTICO al enviado en el paso 'start'
       const tokenResponse = await fetch('https://api.mercadopago.com/oauth/token', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -50,7 +72,10 @@ export default async function handler(req, res) {
       });
 
       const data = await tokenResponse.json();
-      if (!tokenResponse.ok) throw new Error(data.message || 'Error al obtener tokens de MP');
+      if (!tokenResponse.ok) {
+        console.error('[MP OAuth] Error al canjear token:', data);
+        throw new Error(data.message || 'Error en el intercambio de tokens');
+      }
 
       const db = getAdminDb();
       const expiresAt = Date.now() + (data.expires_in * 1000);
@@ -81,10 +106,11 @@ export default async function handler(req, res) {
         }, { merge: true });
       });
 
+      console.log(`[MP OAuth] Conexión exitosa para tenant: ${tenantId}`);
       return res.redirect(`${appOrigin}/settings?mp=connected`);
     }
 
-    // 3. STATUS (GET /api/mp/status)
+    // 3. STATUS
     if (action === 'status') {
       const decodedToken = await verifyFirebaseRequest(req);
       const db = getAdminDb();
@@ -98,36 +124,28 @@ export default async function handler(req, res) {
       });
     }
 
-    // 4. DISCONNECT (POST /api/mp/oauth/disconnect)
+    // 4. DISCONNECT
     if (action === 'disconnect') {
       const decodedToken = await verifyFirebaseRequest(req);
       const db = getAdminDb();
       const tenantId = decodedToken.uid;
 
-      console.log(`[MP Auth] Desconectando tenant: ${tenantId}`);
-
       await db.runTransaction(async (t) => {
         const privRef = db.collection('private_integrations').doc(tenantId);
         const pubRef = db.collection('tenants').doc(tenantId).collection('config').doc('settings');
 
-        // Borramos tokens privados
-        t.set(privRef, {
-          mercadoPago: admin.firestore.FieldValue.delete()
-        }, { merge: true });
+        t.update(privRef, {
+          mercadoPago: FieldValue.delete()
+        });
 
-        // Limpiamos configuración pública de QR y estado
-        t.set(pubRef, {
-          mercadoPagoConfig: {
-            habilitado: false,
-            connected: false,
-            userId: null,
-            vinculadoAt: null,
-            qrImageUrl: null,
-            posName: null,
-            posExternalId: null,
-            qrConfigs: {} // Limpiamos todas las cajas
-          }
-        }, { merge: true });
+        t.update(pubRef, {
+          'mercadoPagoConfig.habilitado': false,
+          'mercadoPagoConfig.connected': false,
+          'mercadoPagoConfig.userId': null,
+          'mercadoPagoConfig.vinculadoAt': null,
+          'mercadoPagoConfig.qrImageUrl': null,
+          'mercadoPagoConfig.qrConfigs': {}
+        });
       });
 
       return res.status(200).json({ success: true });
@@ -137,6 +155,6 @@ export default async function handler(req, res) {
   } catch (error) {
     console.error('Error en mp-auth:', error);
     if (action === 'callback') return res.redirect(`${appOrigin}/settings?mp=error`);
-    return res.status(error.statusCode || 500).json({ error: error.message });
+    return res.status(500).json({ error: error.message });
   }
 }
