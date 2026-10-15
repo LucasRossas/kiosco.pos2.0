@@ -100,7 +100,16 @@ export default async function handler(req, res) {
 
     const result = await finalizeSale(tenantId, saleData, paymentId);
 
-    // Limpiar el índice de la orden ya procesada
+    // 3. Actualizar el estado de la orden QR para sincronizar el frontend
+    await db.collection('tenants').doc(tenantId).collection('qr_orders').doc(externalReference).update({
+      status: 'paid',
+      paymentId: paymentId,
+      merchantOrderId: String(order.id),
+      saleId: result.sale.id,
+      updatedAt: new Date().toISOString()
+    }).catch(err => console.warn('[Confirm] No se pudo actualizar qr_orders:', err.message));
+
+    // 4. Limpiar el índice de la orden ya procesada
     await db.collection('qr_order_index').doc(externalReference).delete().catch(() => {});
 
     return res.status(200).json({ confirmed: true, ...result });

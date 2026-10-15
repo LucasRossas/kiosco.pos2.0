@@ -15,10 +15,10 @@ export default async function handler(req, res) {
   try {
     const token = await verifyFirebaseRequest(req);
     const tenantId = token.uid;
-    const { action, posExternalId, externalReference, items, idempotencyKey } = req.body || {};
+    const { action, posIndex, externalReference, items, idempotencyKey, shiftId, cashier } = req.body || {};
     const db = getAdminDb();
 
-    // 1. Obtener credenciales de Mercado Pago
+    // 1. Obtener credenciales de Mercado Pago y configuración de POS
     const privateRef = db.collection('private_integrations').doc(tenantId);
     const privateSnap = await privateRef.get();
     const mpData = privateSnap.data()?.mercadoPago;
@@ -27,20 +27,23 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: 'Mercado Pago no está vinculado' });
     }
 
+    const qrConfigs = mpData.qrConfigs || {};
+    const idx = parseInt(posIndex);
+    if (isNaN(idx) || !qrConfigs[idx]) {
+      return res.status(400).json({ error: 'Configuración de POS no encontrada' });
+    }
+    const posExternalId = qrConfigs[idx].externalPosId;
+    if (!posExternalId) {
+      return res.status(400).json({ error: 'ID externo de POS no encontrado en la configuración' });
+    }
+
     const mpUserId = mpData.userId;
     const refRegex = new RegExp(`^pos-${tenantId}-\\d+$`);
 
     if (action === 'create') {
-      const { shiftId, cashier } = req.body || {};
-
       // Validar externalReference
       if (!externalReference || !refRegex.test(externalReference)) {
         return res.status(400).json({ error: 'Referencia externa inválida. Debe ser pos-<uid>-<timestamp>' });
-      }
-
-      // Validar posExternalId
-      if (!posExternalId) {
-        return res.status(400).json({ error: 'ID de caja (POS) faltante' });
       }
 
       if (!items || !Array.isArray(items) || items.length === 0) {
@@ -48,6 +51,7 @@ export default async function handler(req, res) {
       }
 
       // Validar stock y calcular total desde la base
+      const tenantSnap = await db.collection('tenants').doc(tenantId).get();
       const tenantRef = db.collection('tenants').doc(tenantId);
       const productRefs = items.map(item => tenantRef.collection('products').doc(item.productId));
       const productSnaps = await Promise.all(productRefs.map(ref => ref.get()));
@@ -129,19 +133,30 @@ export default async function handler(req, res) {
         return res.status(400).json({ error: mpResult.message || 'Error al asignar la orden a la caja' });
       }
 
-      // Guardar "Venta Pendiente" en el índice
-      await db.collection('qr_order_index').doc(externalReference).set({
+      const orderDoc = {
         tenantId,
         posExternalId,
         externalReference,
-        items: normalizedItems,
-        total: calculatedTotal,
-        shiftId: shiftId || null,
-        cashier: cashier || null,
+        amount: calculatedTotal,
         status: 'pending',
-        createdAt: new Date(),
-        expiresAt: expires
+        createdAt: new Date().toISOString(),
+        expiresAt: expires,
+        saleMetadata: {
+          items: normalizedItems,
+          shiftId: shiftId || null,
+          cashier: cashier || null,
+          storeName: tenantSnap.data()?.storeName || 'Mi Comercio'
+        }
+      };
+
+      // Guardar en el índice global (para el webhook)
+      await db.collection('qr_order_index').doc(externalReference).set({
+        tenantId,
+        createdAt: new Date()
       });
+
+      // Guardar en la colección del tenant (para el frontend y el webhook)
+      await db.collection('tenants').doc(tenantId).collection('qr_orders').doc(externalReference).set(orderDoc);
 
       return res.status(200).json({
         success: true,
@@ -153,21 +168,18 @@ export default async function handler(req, res) {
       if (!externalReference || !refRegex.test(externalReference)) {
         return res.status(400).json({ error: 'Referencia externa inválida' });
       }
-      if (!posExternalId) return res.status(400).json({ error: 'ID de caja faltante' });
 
       const url = `https://api.mercadopago.com/instore/qr/seller/collectors/${mpUserId}/pos/${posExternalId}/orders`;
 
-      const mpRes = await mpFetch(db, tenantId, url, {
+      await mpFetch(db, tenantId, url, {
         method: 'DELETE',
-      });
-
-      if (!mpRes.ok) {
-        const mpResult = await mpRes.json();
-        console.error('MP Cancel Order Error:', mpResult);
-        // A veces el DELETE falla si ya no hay orden, no lanzamos error fatal
-      }
+      }).catch(err => console.error('Error deleting MP order:', err));
 
       await db.collection('qr_order_index').doc(externalReference).delete().catch(() => {});
+      await db.collection('tenants').doc(tenantId).collection('qr_orders').doc(externalReference).update({
+        status: 'cancelled',
+        updatedAt: new Date().toISOString()
+      }).catch(() => {});
 
       return res.status(200).json({ success: true });
     }

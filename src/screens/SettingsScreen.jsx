@@ -43,6 +43,7 @@ export default function SettingsScreen({ settings, onSaveSettings, tenantId, onA
 
   // Helper centralizado para MP
   const mpRequest = async (path, options = {}) => {
+    const url = `${API_BASE_URL}${path}`;
     try {
       const auth = getFirebaseAuth();
       const currentUser = auth.currentUser;
@@ -50,7 +51,7 @@ export default function SettingsScreen({ settings, onSaveSettings, tenantId, onA
 
       const token = await currentUser.getIdToken(true); // Forzar refresh del token
 
-      const res = await fetch(`${API_BASE_URL}${path}`, {
+      const res = await fetch(url, {
         ...options,
         headers: {
           ...options.headers,
@@ -60,17 +61,24 @@ export default function SettingsScreen({ settings, onSaveSettings, tenantId, onA
       });
 
       const contentType = res.headers.get("content-type");
-      if (!contentType || !contentType.includes("application/json")) {
+      const isJson = contentType && contentType.includes("application/json");
+
+      if (!isJson) {
         const text = await res.text();
-        console.error("Respuesta no-JSON detectada:", text.substring(0, 200));
-        throw new Error(`Error del servidor (${res.status}). Intentá de nuevo.`);
+        console.error("URL:", url, "Status:", res.status, "Response:", text.substring(0, 150));
+        throw new Error(`Status: ${res.status} | Path: ${path} | Error: Formato no válido`);
       }
 
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Error en la comunicación con MP');
+      if (!res.ok) {
+        console.error("URL:", url, "Status: ", res.status, "Response:", JSON.stringify(data));
+        throw new Error(`Status: ${res.status} | Path: ${path} | Error: ${data.error || 'Desconocido'}`);
+      }
       return data;
     } catch (error) {
-      console.error(`MP API Error [${path}]:`, error);
+      if (!error.message.includes(path)) {
+        console.error(`MP API Exception [${path}]:`, error);
+      }
       throw error;
     }
   };
@@ -136,7 +144,7 @@ export default function SettingsScreen({ settings, onSaveSettings, tenantId, onA
         }
       });
       toast.success('Mercado Pago desconectado');
-    } catch (err) {
+    } catch {
       toast.error('Error al desconectar');
     } finally {
       setIsSavingIntegrations(false);
@@ -172,13 +180,13 @@ export default function SettingsScreen({ settings, onSaveSettings, tenantId, onA
   const loadMPStores = async () => {
     setIsLoadingMPData(true);
     try {
-      const data = await mpRequest('/api/mp/setup-pos?action=list-stores');
+      const data = await mpRequest('/api/mp-setup-pos?action=list-stores');
       setStores(Array.isArray(data) ? data : []);
-    } catch (err) {
-      toast.error(err.message || "No se pudieron cargar las sucursales");
+    } catch (error) {
+      toast.error("No se pudieron cargar las sucursales");
       setStores([]);
       // Si el error es de autenticación o vinculación, podemos resetear el modo
-      if (err.message.includes("vinculado") || err.message.includes("conectado")) {
+      if (error.message && (error.message.includes("vinculado") || error.message.includes("conectado"))) {
         setConfigMode(null);
       }
     } finally {
@@ -192,9 +200,9 @@ export default function SettingsScreen({ settings, onSaveSettings, tenantId, onA
     if (!storeId) return setPosList([]);
     setIsLoadingMPData(true);
     try {
-      const data = await mpRequest(`/api/mp/setup-pos?action=list-pos&store_id=${storeId}`);
+      const data = await mpRequest(`/api/mp-setup-pos?action=list-pos&store_id=${storeId}`);
       setPosList(Array.isArray(data) ? data : []);
-    } catch (err) {
+    } catch {
       toast.error("No se pudieron cargar las cajas");
       setPosList([]);
     } finally {
@@ -231,32 +239,36 @@ export default function SettingsScreen({ settings, onSaveSettings, tenantId, onA
         }
       };
 
-      const data = await mpRequest('/api/mp/setup-pos?action=setup', {
+      const data = await mpRequest('/api/mp-setup-pos?action=setup', {
         method: 'POST',
         body: JSON.stringify({ ...payload, posIndex: selectedPosIndex })
       });
 
       toast.success('¡Configuración de QR completada!', { id: toastId });
 
+      const backendConfig = {
+        posId: data.posId,
+        externalPosId: data.externalPosId,
+        storeId: data.storeId,
+        qrImageUrl: data.qrImageUrl,
+        posName: data.posName
+      };
+
+      // Nunca escribas campos undefined
+      Object.keys(backendConfig).forEach(key => {
+        if (backendConfig[key] === undefined) delete backendConfig[key];
+      });
+
       const newQrConfigs = {
         ...(settings.mercadoPagoConfig?.qrConfigs || {}),
-        [selectedPosIndex]: {
-          posName: data.posName || (configMode === 'map' ? 'Caja Vinculada' : `Caja ${selectedPosIndex}`),
-          qrImageUrl: data.qrImage,
-          posExternalId: data.externalPosId,
-          posId: data.posId,
-          storeId: data.storeId
-        }
+        [selectedPosIndex]: backendConfig
       };
 
       onSaveSettings({
         ...settings,
         mercadoPagoConfig: {
           ...settings.mercadoPagoConfig,
-          qrImageUrl: data.qrImage,
-          posName: data.posName || 'Caja Vinculada',
-          posExternalId: data.externalPosId,
-          storeId: data.storeId,
+          ...backendConfig,
           qrConfigs: newQrConfigs
         }
       });
@@ -277,7 +289,7 @@ export default function SettingsScreen({ settings, onSaveSettings, tenantId, onA
     const toastId = toast.loading(`Verificando Caja ${selectedPosIndex}...`);
 
     try {
-      const data = await mpRequest(`/api/mp/setup-pos?action=test&pos_id=${posId}`);
+      const data = await mpRequest(`/api/mp-setup-pos?action=test&pos_id=${posId}`);
       toast.success(`¡Caja "${data.name}" conectada correctamente!`, { id: toastId });
     } catch (error) {
       toast.error(error.message, { id: toastId });
@@ -287,6 +299,14 @@ export default function SettingsScreen({ settings, onSaveSettings, tenantId, onA
   };
 
   const handlePrintQR = () => {
+    document.body.classList.add('printing-poster');
+
+    const afterPrint = () => {
+      document.body.classList.remove('printing-poster');
+      window.removeEventListener('afterprint', afterPrint);
+    };
+
+    window.addEventListener('afterprint', afterPrint);
     window.print();
   };
 

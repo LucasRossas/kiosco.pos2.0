@@ -20,8 +20,8 @@ export default defineConfig({
       registerType: 'autoUpdate',
       includeAssets: ['favicon.svg'],
       manifest: {
-        name: 'Punto Mercado POS',
-        short_name: 'Punto Mercado',
+        name: 'PuntoGestión',
+        short_name: 'PuntoGestión',
         description: 'Punto de venta y gestión para comercios.',
         theme_color: '#2563eb',
         background_color: '#f8fafc',

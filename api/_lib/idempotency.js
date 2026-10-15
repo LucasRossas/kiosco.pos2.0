@@ -21,6 +21,8 @@ export async function checkAndMarkProcessing(id, commerceId, source = 'webhook')
     return await db.runTransaction(async (transaction) => {
       const doc = await transaction.get(paymentRef);
       const now = FieldValue.serverTimestamp();
+
+      // Declarar antes para evitar ReferenceError
       const data = doc.exists ? doc.data() : null;
 
       if (doc.exists) {

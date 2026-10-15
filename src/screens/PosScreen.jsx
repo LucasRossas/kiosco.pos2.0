@@ -93,10 +93,16 @@ export default function PosScreen({
         const currentUser = getFirebaseAuth()?.currentUser;
         if (currentUser) {
           const token = await currentUser.getIdToken();
-          await fetch(`${API_BASE_URL}/api/mp/qr-order`, {
-            method: 'DELETE',
+          const registerName = currentShift?.registerName || '';
+          const posIndex = parseInt(registerName.match(/\d+/)?.[0]) || 1;
+          await fetch(`${API_BASE_URL}/api/qr-order`, {
+            method: 'POST',
             headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-            body: JSON.stringify({ external_reference: mpExternalRef })
+            body: JSON.stringify({
+              action: 'cancel',
+              posIndex,
+              externalReference: mpExternalRef
+            })
           });
         }
       } catch (e) {
@@ -438,25 +444,18 @@ export default function PosScreen({
       return;
     }
 
-    // Identificar qué caja (1, 2, 3) corresponde al Punto de Venta actual
-    // Si no hay mapeo explícito, usamos el número de registro si es predecible, o la Caja 1 por defecto.
     const registerName = currentShift?.registerName || '';
-    const posMatch = registerName.match(/\d+/);
-    const posIndex = posMatch ? parseInt(posMatch[0]) : 1;
+    const posIndex = parseInt(registerName.match(/\d+/)?.[0]) || 1;
 
     // Buscar la configuración específica para esta caja
-    const specificConfig = config.qrConfigs?.[posIndex] || config.qrConfigs?.['1'] || {
-      posExternalId: config.posExternalId,
-      qrImageUrl: config.qrImageUrl
-    };
+    const specificConfig = settings.mercadoPagoConfig?.qrConfigs?.[posIndex] || settings.mercadoPagoConfig?.qrConfigs?.[1];
 
-    if (!specificConfig?.posExternalId) {
+    if (!specificConfig) {
       toast.error(`No hay un QR configurado para la ${registerName || 'Caja 1'}. Ve a Configuración.`);
       return;
     }
 
-    const saleId = Date.now().toString();
-    const externalReference = `${tenantId}_${saleId}`;
+    const externalReference = `pos-${tenantId}-${Date.now()}`;
     setMpExternalRef(externalReference);
     setMpModalOpen(true);
 
@@ -466,24 +465,18 @@ export default function PosScreen({
       const token = await currentUser.getIdToken();
 
       const payload = {
-        amount: total,
-        external_reference: externalReference,
-        description: `Venta en ${settings.storeName || 'Comercio'}`,
-        external_pos_id: specificConfig.posExternalId, // IMPORTANTE: Enviar el ID correcto del POS
+        action: 'create',
+        posIndex,
+        externalReference,
         items: cart.map(item => ({
-          title: item.name,
-          unit_price: Number(item.price),
-          quantity: Number(item.quantity),
-          total_amount: Number(item.lineTotal)
+          productId: item.id,
+          quantity: Number(item.quantity)
         })),
-        saleMetadata: {
-          shiftId: currentShift?.id,
-          cashier: currentShift?.cashier,
-          items: cart.map(item => ({ ...item, lineTotal: getLineTotal(item) }))
-        }
+        shiftId: currentShift?.id,
+        cashier: currentShift?.cashier
       };
 
-      const response = await fetch(`${API_BASE_URL}/api/mp/qr-order`, {
+      const response = await fetch(`${API_BASE_URL}/api/qr-order`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -1011,8 +1004,7 @@ export default function PosScreen({
               <div className="bg-white p-4 rounded-xl shadow-inner mb-4 border-2 border-dashed border-gray-200">
                 {(() => {
                   const registerName = currentShift?.registerName || '';
-                  const posMatch = registerName.match(/\d+/);
-                  const posIndex = posMatch ? parseInt(posMatch[0]) : 1;
+                  const posIndex = parseInt(registerName.match(/\d+/)?.[0]) || 1;
                   const qrUrl = settings.mercadoPagoConfig?.qrConfigs?.[posIndex]?.qrImageUrl || settings.mercadoPagoConfig?.qrImageUrl;
 
                   return qrUrl ? (

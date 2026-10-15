@@ -11,6 +11,11 @@ export function getSaleId(tenantId, externalReference) {
 
 /**
  * Procesa una venta de forma atómica: descuenta stock, crea el registro y marca el pago.
+ *
+ * REGLA QR: Si el pago ya fue aprobado por Mercado Pago (webhook o confirmación manual),
+ * la venta DEBE registrarse obligatoriamente. No se lanza error por falta de stock;
+ * en su lugar, el stock se descuenta igual (quedando negativo si es necesario)
+ * y se marca la venta con stockWarning: true.
  */
 export async function finalizeSale(tenantId, saleData, paymentId) {
   const db = getAdminDb();
@@ -22,11 +27,13 @@ export async function finalizeSale(tenantId, saleData, paymentId) {
     const existingSale = await transaction.get(saleRef);
     const existingClaim = await transaction.get(claimRef);
 
-    // Idempotencia
+    // Idempotencia: Si la venta ya existe, no hacemos nada
     if (existingSale.exists) return { alreadyProcessed: true, sale: existingSale.data() };
+
+    // Si el pago ya fue reclamado por otra venta (colisión teórica), lanzamos error
     if (existingClaim.exists) throw new BusinessError('Este pago ya fue utilizado', 409);
 
-    // 1. Validar Stock
+    // 1. Cargar productos para validación y descuento de stock
     const productRefs = saleData.items.map(item => tenantRef.collection('products').doc(item.productId));
     const productSnaps = [];
     for (const pRef of productRefs) {
@@ -37,10 +44,14 @@ export async function finalizeSale(tenantId, saleData, paymentId) {
     for (let i = 0; i < saleData.items.length; i++) {
       const item = saleData.items[i];
       const pSnap = productSnaps[i];
-      if (!pSnap.exists) throw new BusinessError(`Producto ${item.productId} no existe`);
+
+      if (!pSnap.exists) {
+        throw new BusinessError(`Producto ${item.productId} no existe`);
+      }
 
       const pData = pSnap.data();
-      // Si el pago ya está aprobado, no bloqueamos la venta por stock, solo avisamos.
+
+      // Verificamos stock si el producto lo trackea
       if (item.trackStock && pData.stock !== null && pData.stock < item.quantity) {
         hasStockWarning = true;
         console.warn(`[Stock Warning] Venta ${saleData.id} forzada con stock insuficiente para ${pData.name}`);
@@ -52,14 +63,14 @@ export async function finalizeSale(tenantId, saleData, paymentId) {
       ...saleData,
       mercadoPagoPaymentId: paymentId,
       status: 'completed',
-      stockWarning: hasStockWarning || undefined,
+      stockWarning: hasStockWarning, // true si hubo falta de stock, false en caso contrario
       processedAt: new Date().toISOString(),
       updatedAt: new Date(),
     };
 
     transaction.set(saleRef, finalSale);
 
-    // 3. Reclamar el pago
+    // 3. Reclamar el pago (Previene que el mismo paymentId se use dos veces)
     transaction.set(claimRef, {
       saleId: saleData.id,
       tenantId,
@@ -68,7 +79,8 @@ export async function finalizeSale(tenantId, saleData, paymentId) {
       createdAt: new Date().toISOString()
     });
 
-    // 4. Actualizar Stock (Permite stock negativo si ya está pago)
+    // 4. Actualizar Stock
+    // Se descuenta el stock de todos los items, permitiendo que el valor sea negativo.
     saleData.items.forEach((item, i) => {
       if (item.trackStock) {
         const pData = productSnaps[i].data();

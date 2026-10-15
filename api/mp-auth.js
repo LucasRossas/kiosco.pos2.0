@@ -101,7 +101,8 @@ export default async function handler(req, res) {
             connected: true,
             userId: data.user_id,
             vinculadoAt: new Date().toISOString(),
-            publicKey: data.public_key
+            publicKey: data.public_key,
+            qrConfigs: {}
           }
         }, { merge: true });
       });
@@ -143,8 +144,14 @@ export default async function handler(req, res) {
           'mercadoPagoConfig.connected': false,
           'mercadoPagoConfig.userId': null,
           'mercadoPagoConfig.vinculadoAt': null,
+          'mercadoPagoConfig.publicKey': null,
           'mercadoPagoConfig.qrImageUrl': null,
-          'mercadoPagoConfig.qrConfigs': {}
+          'mercadoPagoConfig.qrConfigs': {},
+          'mercadoPagoConfig.posId': null,
+          'mercadoPagoConfig.externalPosId': null,
+          'mercadoPagoConfig.storeId': null,
+          'mercadoPagoConfig.posName': null,
+          'mercadoPagoConfig.lastSync': null
         });
       });
 
