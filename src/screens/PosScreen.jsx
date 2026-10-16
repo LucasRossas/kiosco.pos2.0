@@ -53,6 +53,7 @@ export default function PosScreen({
   currentShift,
   shifts = [],
   onSelectShift,
+  onNavigate,
   role,
   onCloseShift,
 }) {
@@ -488,6 +489,17 @@ export default function PosScreen({
       const data = await response.json();
 
       if (!response.ok) {
+        if (data.code === 'POS_NOT_FOUND' || data.code === 'POS_CONFIG_NOT_FOUND') {
+          toast.error("La caja QR no está lista", {
+            description: data.error || "Configurala en Ajustes para poder cobrar.",
+            action: {
+              label: "Ir a Ajustes",
+              onClick: () => onNavigate?.('settings')
+            },
+            duration: 8000
+          });
+          setMpError("Caja no configurada. Por favor, revisá los Ajustes.");
+        }
         throw new Error(data.error || 'Error al generar orden QR');
       }
 

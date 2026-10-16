@@ -70,6 +70,7 @@ const routes = [
     options: { modifyReq: (req) => { req.query.action = 'callback'; } }
   },
   { path: '/mp-setup-pos', module: './api/setup-pos.js' },
+  { path: '/open-shift', module: './api/open-shift.js' },
   { path: '/arca', module: './api/arca.js' },
   { path: '/system-alerts', module: './api/system-alerts.js' },
   { path: '/global-product', module: './api/global-product.js' },
@@ -82,7 +83,7 @@ const routes = [
 ];
 
 routes.forEach(route => {
-  apiRouter.all(route.path, handle(route.module));
+  apiRouter.all(route.path, handle(route.module, route.options));
 });
 
 // Catch-all para rutas API no definidas (dentro de /api)

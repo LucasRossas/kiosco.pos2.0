@@ -120,7 +120,7 @@ export default async function handler(req, res) {
 
       const pIdx = parseInt(posIndex);
       if (isNaN(pIdx) || pIdx < 1 || pIdx > limit) {
-        throw new MpError(`posIndex debe ser un número entre 1 y ${limit}`, 400);
+        throw new MpError(`Tu plan ${plan.toUpperCase()} solo permite configurar hasta ${limit} caja(s).`, 403, 'PLAN_LIMIT_REACHED');
       }
 
       let finalPos;
@@ -132,8 +132,9 @@ export default async function handler(req, res) {
         // Vincular existente
         finalPos = await safeMpFetch(db, tenantId, creds, `${MP_API}/pos/${posData.id}`, {}, 'La caja seleccionada no es válida');
 
-        // REQUISITO: Si no tiene external_id, hay que asignarle uno para que funcione QR V2
-        if (!finalPos.external_id || String(finalPos.external_id).trim() === '' || finalPos.external_id === 'undefined') {
+        // REQUISITO: Si no tiene external_id válido, hay que asignarle uno para que funcione QR V2
+        const currentExtId = String(finalPos.external_id || '').trim();
+        if (!currentExtId || currentExtId === 'undefined' || currentExtId === 'null') {
           const safeUid = tenantId.replace(/[^a-zA-Z0-9]/g, '');
           const newExternalId = `pos${safeUid}${pIdx}`.substring(0, 40);
           console.log(`[setup-pos] Asignando external_id faltante: ${newExternalId} a POS ${finalPos.id}`);
@@ -201,9 +202,11 @@ export default async function handler(req, res) {
         throw new MpError('Modo no válido', 400);
       }
 
+      const finalExtId = String(finalPos.external_id || '').trim();
+
       const qrConfig = {
         posId: String(finalPos.id),
-        externalPosId: String(finalPos.external_id || ''),
+        externalPosId: finalExtId,
         storeId: String(finalPos.store_id),
         qrImageUrl: finalPos.qr?.image || '',
         posName: finalPos.name || `Caja ${pIdx}`
@@ -211,7 +214,7 @@ export default async function handler(req, res) {
 
       // Validación final para evitar estados corruptos
       if (!qrConfig.externalPosId || qrConfig.externalPosId === 'undefined' || qrConfig.externalPosId === 'null') {
-        throw new MpError('La caja de Mercado Pago no tiene un ID externo válido y no pudo ser asignado.', 500);
+        throw new MpError('La caja de Mercado Pago no tiene un ID externo válido y no pudo ser asignado automáticamente.', 500, 'INVALID_EXTERNAL_POS_ID');
       }
 
       // Guardar en Firestore conforme al CONTRATO
@@ -219,17 +222,14 @@ export default async function handler(req, res) {
         const privateRef = db.collection('private_integrations').doc(tenantId);
         const publicRef = db.collection('tenants').doc(tenantId).collection('config').doc('settings');
 
+        // Usamos notación de punto para actualizar solo la caja específica y preservar las demás
         transaction.update(privateRef, {
           [`mercadoPago.qrConfigs.${pIdx}`]: qrConfig
         });
 
-        transaction.set(publicRef, {
-          mercadoPagoConfig: {
-            qrConfigs: {
-              [pIdx]: qrConfig
-            }
-          }
-        }, { merge: true });
+        transaction.update(publicRef, {
+          [`mercadoPagoConfig.qrConfigs.${pIdx}`]: qrConfig
+        });
       });
 
       return res.status(200).json(qrConfig);

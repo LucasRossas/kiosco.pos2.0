@@ -30,14 +30,18 @@ export default async function handler(req, res) {
     const qrConfigs = mpData.qrConfigs || {};
     const idx = parseInt(posIndex);
     if (isNaN(idx) || !qrConfigs[idx]) {
-      return res.status(400).json({ error: 'Configuración de POS no encontrada' });
+      return res.status(400).json({
+        error: `La configuración para la caja #${posIndex || '?'} no se encontró.`,
+        code: 'POS_CONFIG_NOT_FOUND',
+        details: 'Andá a Configuración → Mercado Pago y volvé a configurar la caja.'
+      });
     }
-    const posExternalId = qrConfigs[idx].externalPosId;
+    const posExternalId = String(qrConfigs[idx].externalPosId || '').trim();
     if (!posExternalId || posExternalId === 'undefined' || posExternalId === 'null') {
       return res.status(400).json({
-        error: 'La caja seleccionada no tiene un ID externo configurado.',
-        code: 'MISSING_EXTERNAL_ID',
-        details: 'Re-configurá la caja desde el panel de Ajustes para solucionar esto.'
+        error: 'La caja no tiene un ID externo válido. Reconfigurala desde Ajustes → Mercado Pago.',
+        code: 'INVALID_EXTERNAL_POS_ID',
+        details: 'El ID guardado en la configuración es inválido (undefined/null).'
       });
     }
 
@@ -134,7 +138,20 @@ export default async function handler(req, res) {
       if (!mpRes.ok) {
         const mpResult = await mpRes.json();
         console.error('MP V2 Create Order Error:', mpResult);
-        return res.status(400).json({ error: mpResult.message || 'Error al asignar la orden a la caja' });
+
+        const mpMessage = (mpResult.message || '').toLowerCase();
+        if (mpMessage.includes('point of sale not found') || mpResult.error === 'not_found') {
+          return res.status(404).json({
+            error: "La caja QR no está configurada o fue desvinculada. Andá a Configuración → Mercado Pago y volvé a configurar la caja.",
+            code: 'POS_NOT_FOUND',
+            details: mpResult.message
+          });
+        }
+
+        return res.status(400).json({
+          error: mpResult.message || 'Error al asignar la orden a la caja',
+          code: 'MP_API_ERROR'
+        });
       }
 
       const orderDoc = {

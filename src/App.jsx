@@ -234,11 +234,16 @@ export default function App() {
           resetLocalTenantState(user.uid);
         }
         setRegistrationData(pendingRegistration);
-        const isActive = profile.isActive || profile.status === 'active' || profile.subscriptionStatus === 'active';
+        const isActive = profile.isActive === true &&
+                         (profile.status === 'active' ||
+                          profile.subscriptionStatus === 'admin_bypass' ||
+                          profile.subscriptionStatus === 'authorized');
+
         if (!user.emailVerified) {
           setAppMode('verify-email');
         } else if (!isActive) {
           setAppMode('checkout');
+          setRegistrationData({ ...profile, tenantId: user.uid, email: user.email });
         } else {
           setAdminUnlocked(false);
           setAppMode('business');
@@ -701,9 +706,35 @@ export default function App() {
 
   const openShift = async (shift) => {
     const newShift = { id: Date.now().toString(), ...shift, registerName: shift.registerName || 'Caja 1', withdrawals: [] };
+
     if (isFirebaseConfigured && tenantId !== DEFAULT_TENANT_ID) {
-      await saveTenantShift(tenantId, newShift);
+      try {
+        const currentUser = getFirebaseAuth()?.currentUser;
+        if (!currentUser) throw new Error('Sesión requerida');
+        const token = await currentUser.getIdToken();
+
+        const response = await fetch(`${API_BASE_URL}/api/open-shift`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify({ shiftData: newShift }),
+        });
+
+        const result = await response.json();
+        if (!response.ok) {
+          throw new Error(result.error || 'Error al validar apertura de turno');
+        }
+
+        toast.success(`Caja abierta exitosamente (Plan: ${result.plan?.toUpperCase()})`);
+      } catch (error) {
+        console.error('Error al abrir turno:', error);
+        toast.error(error.message || 'No se pudo abrir la caja.');
+        return;
+      }
     }
+
     setShiftState((prev) => ({ activeShiftId: newShift.id, shifts: [...prev.shifts, newShift] }));
     localStorage.setItem('activeShiftId', newShift.id);
     localStorage.setItem('isCajaOpen', 'true');
@@ -712,16 +743,7 @@ export default function App() {
   };
 
   const openAdditionalShift = async (shift) => {
-    const isKiosco = settings.plan === 'kiosco';
     const activeCount = shiftState.shifts.length;
-    if (isKiosco) {
-      toast.error('El Plan Kiosco solo permite 1 caja activa. Actualizá al Plan Mercado para operar múltiples puntos de venta.');
-      return;
-    }
-    if (activeCount >= 3) {
-      toast.error('Alcanzaste el límite de 3 cajas simultáneas del Plan Mercado.');
-      return;
-    }
     const nextRegisterNumber = activeCount + 1;
     const newShift = {
       id: Date.now().toString(),
@@ -729,9 +751,35 @@ export default function App() {
       registerName: shift.registerName || `Caja ${nextRegisterNumber}`,
       withdrawals: [],
     };
+
     if (isFirebaseConfigured && tenantId !== DEFAULT_TENANT_ID) {
-      await saveTenantShift(tenantId, newShift);
+      try {
+        const currentUser = getFirebaseAuth()?.currentUser;
+        if (!currentUser) throw new Error('Sesión requerida');
+        const token = await currentUser.getIdToken();
+
+        const response = await fetch(`${API_BASE_URL}/api/open-shift`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify({ shiftData: newShift }),
+        });
+
+        const result = await response.json();
+        if (!response.ok) {
+          throw new Error(result.error || 'Error al validar apertura de turno adicional');
+        }
+
+        toast.success(`Caja adicional abierta exitosamente`);
+      } catch (error) {
+        console.error('Error al abrir turno adicional:', error);
+        toast.error(error.message || 'No se pudo abrir la caja adicional.');
+        return;
+      }
     }
+
     setShiftState((previous) => ({
       activeShiftId: newShift.id,
       shifts: [...previous.shifts, newShift],
@@ -889,7 +937,10 @@ export default function App() {
             return { ok: true };
           }
 
-          const isActive = profile.isActive || profile.status === 'active' || profile.subscriptionStatus === 'active';
+          const isActive = profile.isActive === true &&
+                          (profile.status === 'active' ||
+                           profile.subscriptionStatus === 'admin_bypass' ||
+                           profile.subscriptionStatus === 'authorized');
 
           if (!isActive) {
             setRegistrationData({ ...profile, tenantId: account.tenantId, email });
@@ -1194,6 +1245,7 @@ export default function App() {
               currentShift={currentShift}
               shifts={shiftState.shifts}
               onSelectShift={selectShift}
+              onNavigate={setActiveView}
               adminUnlocked={adminUnlocked}
               role={adminUnlocked || !adminProtectionEnabled ? 'owner' : 'cashier'}
               onCloseShift={() => {

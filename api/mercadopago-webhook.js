@@ -82,16 +82,17 @@ export default async function handler(req, res) {
       const mpStatus = subscription.status;
       let update = {
         subscriptionStatus: mpStatus,
+        subscriptionId: subscription.id,
         lastStatusUpdate: new Date(),
+        updatedAt: new Date()
       };
 
       if (mpStatus === 'authorized') {
         update.isActive = true;
         update.status = 'active';
-        update.activatedAt = new Date();
-      } else if (mpStatus === 'cancelled' || mpStatus === 'paused') {
+      } else {
         update.isActive = false;
-        update.status = 'inactive';
+        update.status = mpStatus === 'pending' ? 'pending_payment' : 'inactive';
       }
 
       await Promise.all([

@@ -90,9 +90,10 @@ export default async function handler(req, res) {
             userId: data.user_id,
             expiresAt: expiresAt,
             connectedAt: new Date().toISOString(),
-            status: 'connected'
+            status: 'connected',
+            qrConfigs: {}
           }
-        }, { merge: true });
+        }, { mergeFields: ['mercadoPago'] });
 
         const pubRef = db.collection('tenants').doc(tenantId).collection('config').doc('settings');
         t.set(pubRef, {
@@ -104,7 +105,7 @@ export default async function handler(req, res) {
             publicKey: data.public_key,
             qrConfigs: {}
           }
-        }, { merge: true });
+        }, { mergeFields: ['mercadoPagoConfig'] });
       });
 
       console.log(`[MP OAuth] Conexión exitosa para tenant: ${tenantId}`);
@@ -140,18 +141,11 @@ export default async function handler(req, res) {
         });
 
         t.update(pubRef, {
-          'mercadoPagoConfig.habilitado': false,
-          'mercadoPagoConfig.connected': false,
-          'mercadoPagoConfig.userId': null,
-          'mercadoPagoConfig.vinculadoAt': null,
-          'mercadoPagoConfig.publicKey': null,
-          'mercadoPagoConfig.qrImageUrl': null,
-          'mercadoPagoConfig.qrConfigs': {},
-          'mercadoPagoConfig.posId': null,
-          'mercadoPagoConfig.externalPosId': null,
-          'mercadoPagoConfig.storeId': null,
-          'mercadoPagoConfig.posName': null,
-          'mercadoPagoConfig.lastSync': null
+          mercadoPagoConfig: {
+            habilitado: false,
+            connected: false,
+            qrConfigs: {}
+          }
         });
       });
 

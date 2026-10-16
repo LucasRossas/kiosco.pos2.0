@@ -427,7 +427,7 @@ export async function saveHybridProduct(tenantId, product) {
 
   await setDoc(doc(database, 'tenants', tenantId, 'products', productId), tenantProduct, { merge: true });
 
-  // 2. Sincronizar el catálogo global exclusivamente mediante Vercel/Admin SDK.
+  // 2. Sincronizar el catálogo global exclusivamente mediante el servidor/Admin SDK.
   const isValidBarcode = barcode && /^\d{7,}$/.test(barcode);
   if (!isValidBarcode) return;
 
@@ -623,7 +623,8 @@ export function listenShifts(tenantId, callback) {
 export async function saveTenantShift(tenantId, shift) {
   const database = getOfflineFirestore();
   if (!database || !tenantId || tenantId === 'demo-commerce') return;
-  // Guardamos cada turno como un documento individual para permitir concurrencia
+  // NOTA: La validación de límites de plan se realiza en /api/open-shift.
+  // No llamar a esta función directamente para aperturas; usar el endpoint del servidor.
   await setDoc(doc(database, 'tenants', tenantId, 'shifts', shift.id), shift);
 }
 

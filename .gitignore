@@ -135,6 +135,5 @@ dist
 .yarn/install-state.gz
 .pnp.*
 
-# Firebase and Vercel
+# Firebase
 .firebase/
-.vercel/
