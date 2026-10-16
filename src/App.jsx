@@ -322,11 +322,15 @@ export default function App() {
     });
 
     const unsubShifts = listenShifts(tenantId, (fetchedShifts) => {
-      setShiftState(prev => ({
-        ...prev,
-        shifts: fetchedShifts,
-        activeShiftId: prev.activeShiftId || (fetchedShifts.length > 0 ? fetchedShifts[0].id : null)
-      }));
+      setShiftState(prev => {
+        // Si el activeShiftId actual ya no existe en la lista de turnos, lo reseteamos
+        const activeStillExists = fetchedShifts.some(s => s.id === prev.activeShiftId);
+        return {
+          ...prev,
+          shifts: fetchedShifts,
+          activeShiftId: activeStillExists ? prev.activeShiftId : (fetchedShifts.length > 0 ? fetchedShifts[0].id : null)
+        };
+      });
     });
 
     const unsubSettings = listenSettings(tenantId, (fetchedSettings) => {
@@ -789,37 +793,48 @@ export default function App() {
     if (!currentShift) return;
     const shiftId = currentShift.id;
 
-    const shiftSales = sales.filter((sale) => sale.shiftId === shiftId && sale.type !== 'shift-close');
-    const shiftTotal = shiftSales.reduce((sum, sale) => sum + sale.total, 0);
+    try {
+      const shiftSales = sales.filter((sale) => sale.shiftId === shiftId && sale.type !== 'shift-close');
+      const shiftTotal = shiftSales.reduce((sum, sale) => sum + sale.total, 0);
 
-    const closeRecord = {
-      id: `close-${shiftId}-${Date.now()}`,
-      type: 'shift-close',
-      shiftId: shiftId,
-      ...currentShift,
-      ...closingData,
-      total: shiftTotal,
-      closedAt: new Date().toISOString(),
-    };
-
-    if (isFirebaseConfigured && tenantId !== DEFAULT_TENANT_ID) {
-      await saveTenantSale(tenantId, closeRecord);
-      const { deleteTenantShift } = await import('./services/firebase');
-      await deleteTenantShift(tenantId, shiftId);
-    }
-
-    setShiftState((previous) => {
-      const remaining = previous.shifts.filter((shift) => shift.id !== shiftId);
-      return {
-        activeShiftId: remaining.length > 0 ? remaining[0].id : null,
-        shifts: remaining,
+      const closeRecord = {
+        id: `close-${shiftId}-${Date.now()}`,
+        type: 'shift-close',
+        shiftId: shiftId,
+        ...currentShift,
+        ...closingData,
+        total: shiftTotal,
+        closedAt: new Date().toISOString(),
       };
-    });
 
-    setCart([]);
-    setPendingView(null);
-    setAppMode('business');
-    setActiveView('pos');
+      if (isFirebaseConfigured && tenantId !== DEFAULT_TENANT_ID) {
+        await saveTenantSale(tenantId, closeRecord);
+        const { deleteTenantShift } = await import('./services/firebase');
+        await deleteTenantShift(tenantId, shiftId);
+      }
+
+      setShiftState((previous) => {
+        const remaining = previous.shifts.filter((shift) => shift.id !== shiftId);
+        return {
+          activeShiftId: remaining.length > 0 ? remaining[0].id : null,
+          shifts: remaining,
+        };
+      });
+
+      if (currentShift.id === shiftState.activeShiftId) {
+        localStorage.removeItem('activeShiftId');
+        localStorage.setItem('isCajaOpen', 'false');
+      }
+
+      setCart([]);
+      setPendingView(null);
+      setAppMode('business');
+      setActiveView('pos');
+      toast.success('Turno cerrado correctamente');
+    } catch (error) {
+      console.error("Error al cerrar turno:", error);
+      toast.error('Error al cerrar el turno. Por favor, reintentá.');
+    }
   };
 
   const activateAccount = async (selectedPlan = registrationData?.plan || 'mercado') => {
@@ -1100,14 +1115,22 @@ export default function App() {
         reportsOnly={activeView === 'daily-summary'}
         helpOnly={activeView === 'help'}
         onCloseShift={() => {
+          if (!currentShift) return;
           const cartHasItems = cart.length > 0;
           const msg = cartHasItems
             ? "¿Desea cerrar el turno? Se perderán los productos actuales del carrito y se registrará el cierre."
             : "¿Confirma que desea cerrar el turno actual y la caja?";
 
           if (window.confirm(msg)) {
+            const shiftSales = sales.filter((sale) => sale.shiftId === currentShift.id && sale.type !== 'shift-close');
+            const withdrawals = (currentShift.withdrawals || []).reduce((sum, item) => sum + item.amount, 0);
+            const cashSales = shiftSales
+              .filter(s => s.paymentMethod === 'cash')
+              .reduce((sum, sale) => sum + sale.total, 0);
+            const expectedCash = (currentShift.openingCash || 0) + cashSales - withdrawals;
+
             closeShift({
-              cashActual: 0,
+              cashActual: expectedCash,
               cashDifference: 0,
               closingNotes: "Cierre rápido desde menú lateral"
             });
@@ -1174,14 +1197,22 @@ export default function App() {
               adminUnlocked={adminUnlocked}
               role={adminUnlocked || !adminProtectionEnabled ? 'owner' : 'cashier'}
               onCloseShift={() => {
+                if (!currentShift) return;
                 const cartHasItems = cart.length > 0;
                 const msg = cartHasItems
                   ? "¿Desea cerrar el turno? Se perderán los productos actuales del carrito y se registrará el cierre."
                   : "¿Confirma que desea cerrar el turno actual y la caja?";
 
                 if (window.confirm(msg)) {
+                  const shiftSales = sales.filter((sale) => sale.shiftId === currentShift.id && sale.type !== 'shift-close');
+                  const withdrawals = (currentShift.withdrawals || []).reduce((sum, item) => sum + item.amount, 0);
+                  const cashSales = shiftSales
+                    .filter(s => s.paymentMethod === 'cash')
+                    .reduce((sum, sale) => sum + sale.total, 0);
+                  const expectedCash = (currentShift.openingCash || 0) + cashSales - withdrawals;
+
                   closeShift({
-                    cashActual: 0,
+                    cashActual: expectedCash,
                     cashDifference: 0,
                     closingNotes: "Cierre rápido desde pantalla de ventas"
                   });

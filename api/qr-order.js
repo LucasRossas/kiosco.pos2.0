@@ -33,8 +33,12 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: 'Configuración de POS no encontrada' });
     }
     const posExternalId = qrConfigs[idx].externalPosId;
-    if (!posExternalId) {
-      return res.status(400).json({ error: 'ID externo de POS no encontrado en la configuración' });
+    if (!posExternalId || posExternalId === 'undefined' || posExternalId === 'null') {
+      return res.status(400).json({
+        error: 'La caja seleccionada no tiene un ID externo configurado.',
+        code: 'MISSING_EXTERNAL_ID',
+        details: 'Re-configurá la caja desde el panel de Ajustes para solucionar esto.'
+      });
     }
 
     const mpUserId = mpData.userId;

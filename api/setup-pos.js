@@ -131,6 +131,21 @@ export default async function handler(req, res) {
         }
         // Vincular existente
         finalPos = await safeMpFetch(db, tenantId, creds, `${MP_API}/pos/${posData.id}`, {}, 'La caja seleccionada no es válida');
+
+        // REQUISITO: Si no tiene external_id, hay que asignarle uno para que funcione QR V2
+        if (!finalPos.external_id || String(finalPos.external_id).trim() === '' || finalPos.external_id === 'undefined') {
+          const safeUid = tenantId.replace(/[^a-zA-Z0-9]/g, '');
+          const newExternalId = `pos${safeUid}${pIdx}`.substring(0, 40);
+          console.log(`[setup-pos] Asignando external_id faltante: ${newExternalId} a POS ${finalPos.id}`);
+
+          await safeMpFetch(db, tenantId, creds, `${MP_API}/pos/${finalPos.id}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ external_id: newExternalId })
+          }, 'Error al asignar ID externo a la caja en Mercado Pago');
+
+          finalPos.external_id = newExternalId;
+        }
       } else if (mode === 'create') {
         const storeData = req.body.storeData || req.body;
         const { address, city, state, latitude, longitude } = storeData;
@@ -188,11 +203,16 @@ export default async function handler(req, res) {
 
       const qrConfig = {
         posId: String(finalPos.id),
-        externalPosId: String(finalPos.external_id),
+        externalPosId: String(finalPos.external_id || ''),
         storeId: String(finalPos.store_id),
         qrImageUrl: finalPos.qr?.image || '',
         posName: finalPos.name || `Caja ${pIdx}`
       };
+
+      // Validación final para evitar estados corruptos
+      if (!qrConfig.externalPosId || qrConfig.externalPosId === 'undefined' || qrConfig.externalPosId === 'null') {
+        throw new MpError('La caja de Mercado Pago no tiene un ID externo válido y no pudo ser asignado.', 500);
+      }
 
       // Guardar en Firestore conforme al CONTRATO
       await db.runTransaction(async (transaction) => {

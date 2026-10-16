@@ -12,8 +12,14 @@ const paymentLabels = {
 export default function ShiftCloseScreen({ shift, sales, onCloseShift, onBack }) {
   const [cashActual, setCashActual] = useState('');
   const [notes, setNotes] = useState('');
-  const shiftSales = sales.filter((sale) => sale.shiftId === shift.id && sale.type !== 'shift-close');
+
+  const shiftSales = useMemo(() => {
+    if (!shift) return [];
+    return sales.filter((sale) => sale.shiftId === shift.id && sale.type !== 'shift-close');
+  }, [sales, shift]);
+
   const summary = useMemo(() => {
+    if (!shift) return { byPayment: {}, withdrawals: 0, total: 0, expectedCash: 0 };
     const byPayment = { cash: 0, transfer: 0, card: 0, qr_mp: 0, other: 0 };
     shiftSales.forEach((sale) => {
       const method = sale.paymentMethod;
